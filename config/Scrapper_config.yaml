@@ -1,0 +1,16 @@
+# ---------------------------------------------------------------------------
+# src/Scrapper/config.yaml
+#
+# Configuration for the Scraper Extractor microservice connection.
+# Update base_url if the container runs on a different host or port.
+# ---------------------------------------------------------------------------
+
+scrapper:
+  # Base URL of the running Docker container (matches docker-compose port mapping)
+  base_url: "http://localhost:8000"
+
+  # API endpoint for extraction requests
+  extract_endpoint: "/extract"
+
+  # Request timeout in seconds — increase for large crawl jobs
+  timeout_seconds: 120

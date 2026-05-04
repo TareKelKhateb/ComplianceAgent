@@ -1,0 +1,9 @@
+services:
+  scraper-api:
+    image: tarekelkhateb/scraper-extractor-api:latest
+    container_name: scraper_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped
