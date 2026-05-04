@@ -884,10 +884,24 @@ class MetadataStore:
         
         return result
     
-    def sync_to_dagshub(self, local_pdf_path: str) -> bool:
+    def sync_to_dagshub(self, local_pdf_path: str, file_url: str = None) -> bool:
         """
         Orchestrates the movement of a local file into the DVC vault and 
-        pushes the changes to DagsHub.
+        pushes the changes to DagsHub. Updates the metadata database upon success.
+        
+        Args:
+            local_pdf_path (str): Path to the local PDF file to sync
+            file_url (str, optional): Document URL for database lookup. If provided,
+                                     the document status will be marked as 'uploaded'
+                                     after successful sync.
+        
+        Returns:
+            bool: True if sync and (optionally) database update succeeded, False otherwise
+        
+        Database Integration:
+            - If file_url is provided, searches for latest document by URL
+            - Updates download_status to 'uploaded' upon successful dvc push
+            - If document not found by URL, warns but returns True (file was synced)
         """
         if not os.path.exists(local_pdf_path):
             print(f"Error: File not found at {local_pdf_path}")
@@ -916,8 +930,30 @@ class MetadataStore:
 
             # 5. Push the actual heavy file to DagsHub remote storage
             subprocess.run(["dvc", "push"], check=True)
-
             print(f"Successfully synced {file_name} to DagsHub storage.")
+
+            # 6. Update database metadata upon successful push
+            if file_url:
+                try:
+                    # Find the document by URL and mark as uploaded
+                    doc = get_latest_by_url(self.db_path, file_url)
+                    if doc:
+                        update_result = update_document_file_info(
+                            self.db_path,
+                            doc.id,
+                            {"download_status": "uploaded", "file_path": final_path}
+                        )
+                        if update_result:
+                            print(f"✓ Database updated: document {doc.id} marked as 'uploaded'")
+                        else:
+                            print(f"⚠ Warning: Document {doc.id} not updated in DB (unexpected)")
+                    else:
+                        print(f"⚠ Warning: Document with URL '{file_url}' not found in DB. "
+                              f"File synced to DagsHub but DB not updated.")
+                except Exception as db_error:
+                    print(f"⚠ Warning: Database update failed: {db_error}. "
+                          f"File was synced to DagsHub but status not recorded.")
+            
             return True
 
         except subprocess.CalledProcessError as e:
