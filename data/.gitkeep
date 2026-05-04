@@ -1,0 +1,3 @@
+# Keep this directory in Git even if empty
+# DVC tracked PDFs (.dvc files) are committed here
+# Actual PDF/document files are tracked via DVC, not Git

@@ -1,0 +1,5 @@
+# Configuration for the ComplianceAgent metadata storage layer
+# Use relative paths from the repository root or absolute paths.
+
+database_path: data/legal_vault.db
+vault_path: data

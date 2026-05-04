@@ -1,0 +1,7 @@
+# Ignore all files in this directory by default
+# Git only tracks .dvc pointer files (see ../.gitignore)
+*
+!.dvc
+!*.dvc
+!.gitignore
+!.gitkeep
