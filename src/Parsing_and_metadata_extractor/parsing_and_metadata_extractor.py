@@ -60,6 +60,11 @@ class ParsingMetaDataExtractor:
                     injection during unit testing.
         """
         # 1. Logging Setup (Class-level only, no basicConfig)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s — %(levelname)s — %(message)s",
+            )
+        
         self.logger = logging.getLogger(__name__)
         
         # 2. Upper Layer API Configuration
