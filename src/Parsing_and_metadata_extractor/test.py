@@ -6,8 +6,9 @@ from src.Parsing_and_metadata_extractor.parsing_and_metadata_extractor import Pa
 
 if __name__ == "__main__":
     
-    parser = ParsingMetaDataExtractor()
     
+    
+    parser = ParsingMetaDataExtractor()
     
     print("Fetching data from microservice...")
     

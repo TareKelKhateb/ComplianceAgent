@@ -69,7 +69,7 @@ class ParsingMetaDataExtractor:
         
         # 2. Upper Layer API Configuration
         # Use the injected client, or instantiate a new one if none was provided
-        self.client = client or ScrapperClient()
+        self.client = ScrapperClient()
         
         # ==========================================
         # 3. Local File System Configuration
