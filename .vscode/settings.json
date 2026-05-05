@@ -1,0 +1,20 @@
+{
+    "workbench.colorCustomizations": {
+        "editor.rangeHighlightBackground": "#00000000",
+        "editor.rangeHighlightBorder": "#00000000",
+        "sqltools.currentQueryBg": "#00000000",
+        "sqltools.currentQueryOutline": "#00000000",
+        "activityBar.background": "#151540",
+        "titleBar.activeBackground": "#1D1D5A",
+        "titleBar.activeForeground": "#FBFBFE",
+        "titleBar.inactiveBackground": "#151540",
+        "titleBar.inactiveForeground": "#FBFBFE",
+        "statusBar.background": "#151540",
+        "statusBar.foreground": "#FBFBFE",
+        "statusBar.debuggingBackground": "#151540",
+        "statusBar.debuggingForeground": "#FBFBFE",
+        "statusBar.noFolderBackground": "#151540",
+        "statusBar.noFolderForeground": "#FBFBFE"
+    },
+    "windowColors.baseColor": "#151540"
+}
