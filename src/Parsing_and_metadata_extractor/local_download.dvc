@@ -1,0 +1,6 @@
+outs:
+- md5: a3a1c50172ce30740a3d977edfa0f6b4.dir
+  size: 1501593
+  nfiles: 9
+  hash: md5
+  path: local_download
