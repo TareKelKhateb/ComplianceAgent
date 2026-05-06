@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
     # 2. Initialise the extractor and show current DB state -----------------
     parser = ParsingMetaDataExtractor()
-
+    
     _print_banner("📊  Current Database State (before pipeline run)")
     parser.print_database_stats()
     parser.print_all_documents()

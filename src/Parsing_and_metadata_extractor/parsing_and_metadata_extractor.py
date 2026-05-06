@@ -1535,3 +1535,6 @@ class ParsingMetaDataExtractor:
                     stats["failed"] += 1
 
         return stats
+    
+    def reset_metadate(self):
+        self.metadata_store.reset_all_data()
