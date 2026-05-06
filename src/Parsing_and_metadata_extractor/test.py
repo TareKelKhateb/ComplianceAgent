@@ -8,22 +8,32 @@ if __name__ == "__main__":
     
     
     
-    parser = ParsingMetaDataExtractor()
-    
-    print("Fetching data from microservice...")
-    
-    scrapped_data = parser.fetch_incoming_data( url="https://www.cbe.org.eg/en/laws-regulations/laws/banking-laws")
+   parser = ParsingMetaDataExtractor()
+   # 
+   # print("Fetching data from microservice...")
+   # 
+   # scrapped_data = parser.fetch_incoming_data( url="https://www.cbe.org.eg/en/laws-regulations/laws/banking-laws")
 
-    # Check if the extraction was successful before trying to save
-    if scrapped_data:
-        
-        output_filename = "output_1.json"
-        
-        with open(output_filename, "w", encoding="utf-8") as f:
-            # indent=4 makes the JSON easily readable in VS Code
-            json.dump(scrapped_data, f, ensure_ascii=False, indent=4)
-            
-        print(f"✅ Success! Data cached locally to: {output_filename}")
-        
-    else:
-        print("⚠️ Extraction failed or returned empty. No file was saved.")
+   # # Check if the extraction was successful before trying to save
+   # if scrapped_data:
+   #     
+   #     output_filename = "output_1.json"
+   #     
+   #     with open(output_filename, "w", encoding="utf-8") as f:
+   #         # indent=4 makes the JSON easily readable in VS Code
+   #         json.dump(scrapped_data, f, ensure_ascii=False, indent=4)
+   #         
+   #     print(f"✅ Success! Data cached locally to: {output_filename}")
+   #     
+   # else:
+   #     print("⚠️ Extraction failed or returned empty. No file was saved.")
+   
+   print("Download pdf files")
+   
+   pdf_file = parser.download_pdf( file_url="https://www.cbe.org.eg/-/media/project/cbe/page-content/other-links/cbe-law-no,-d-,-194-of-2020.pdf",
+                                   file_name="file3",
+                                   save_directory="local_download")
+   
+   hash_value = parser.calculate_hash(pdf_file)
+   
+   print("the hash value of the downloaded file: ", hash_value)
