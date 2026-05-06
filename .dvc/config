@@ -1,6 +1,6 @@
 [core]
     remote = origin
 ['remote "origin"']
-    url = https://dagshub.com/tarekelkhateb31/ComplianceAgent.dvc
+    url = https://dagshub.com/rezk.ahmed.rezk1/regulatory-management-system-storage.dvc
 ['remote "storage-origin"']
     url = https://dagshub.com/rezk.ahmed.rezk1/regulatory-management-system-storage.dvc
