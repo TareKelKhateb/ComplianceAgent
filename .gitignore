@@ -223,3 +223,26 @@ __marimo__/
 local_download
 local_download/
 **/local_download/
+
+
+# =============================================================================
+# Data and Database (tracked via DVC)
+# =============================================================================
+# Ignore all files in /data/ EXCEPT .dvc pointer files
+/data/**
+!/data/.dvc/
+!/data/.gitkeep
+!/data/**/*.dvc
+!/data/**/*.dvc.yaml
+
+# Database file - tracked via Git (small metadata only)
+# Uncomment if you want Git versioning:
+# !/data/legal_vault.db
+
+# =============================================================================
+# DVC Internal Files
+# =============================================================================
+.dvc/cache/
+.dvc/tmp/
+.dvc/config.local
+dvc.lock

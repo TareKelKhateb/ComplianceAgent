@@ -1,0 +1,48 @@
+# DVC ignore file for ComplianceAgent
+# These files/directories are excluded from DVC tracking
+
+# Python and virtual environments
+.venv/
+venv/
+env/
+.env
+*.pyc
+__pycache__/
+*.egg-info/
+.pytest_cache/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git and version control
+.git/
+.gitignore
+
+# DVC internal files and cache
+.dvc/cache/
+.dvc/tmp/
+.dvc/config.local
+
+# Database files (tracked separately via Git)
+*.db
+*.sqlite3
+
+# Temporary and build files
+*.tmp
+*.temp
+/build/
+/dist/
+*.egg-info/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+.directory
+
+# Project-specific cache
+.cache/
