@@ -4,13 +4,6 @@ test.py — Data Ingestion Pipeline Entry-Point
 Thin entry-point: loads a scraped JSON file and delegates the entire
 ingestion pipeline to ``ParsingMetaDataExtractor.process_pipeline()``.
 
-The pipeline will:
-  1. Download each PDF.
-  2. Insert / update the metadata DB record.
-  3. Push the file to DagsHub via DVC under a content-addressed filename
-     (``<stem>__<hash8>.pdf``) so vault conflicts are impossible even when
-     document content changes between runs.
-
 Usage (from the project root):
     uv run python -m src.Parsing_and_metadata_extractor.test
 """
@@ -51,15 +44,11 @@ def _print_banner(text: str, char: str = "═", width: int = 64) -> None:
 
 def _print_stats(stats: dict, total: int) -> None:
     _print_banner("PIPELINE RUN SUMMARY")
-    print(f"  {'Total processed':<28} {total}")
-    print(f"  {'✅  New inserts':<28} {stats.get('new', 0)}")
-    print(f"  {'⬆️   Updated versions':<28} {stats.get('updated', 0)}")
-    print(f"  {'🔄  Skipped (unchanged)':<28} {stats.get('skipped', 0)}")
-    print(f"  {'❌  Failed':<28} {stats.get('failed', 0)}")
-    if stats.get("pushed", 0) or stats.get("push_failed", 0):
-        print()
-        print(f"  {'☁️   Pushed to DagsHub':<28} {stats.get('pushed', 0)}")
-        print(f"  {'⚠️   DagsHub push failed':<28} {stats.get('push_failed', 0)}")
+    print(f"  {'Total processed':<25} {total}")
+    print(f"  {'✅  New inserts':<25} {stats.get('new', 0)}")
+    print(f"  {'⬆️   Updated versions':<25} {stats.get('updated', 0)}")
+    print(f"  {'🔄  Skipped (unchanged)':<25} {stats.get('skipped', 0)}")
+    print(f"  {'❌  Failed':<25} {stats.get('failed', 0)}")
     print("═" * 64 + "\n")
 
 
@@ -91,17 +80,13 @@ if __name__ == "__main__":
     # 2. Initialise the extractor and show current DB state -----------------
     parser = ParsingMetaDataExtractor()
 
-
     _print_banner("📊  Current Database State (before pipeline run)")
     parser.print_database_stats()
     parser.print_all_documents()
 
-    # 3. Run the pipeline (with DagsHub push enabled) -----------------------
+    # 3. Run the pipeline ----------------------------------------------------
     _print_banner("⚙️   Running Ingestion Pipeline")
-    stats = parser.process_pipeline(
-        scraped_data=scraped_data,
-        push_to_dagshub=True,   # set False to skip DVC push (dry-run)
-    )
+    stats = parser.process_pipeline(scraped_data=scraped_data)
 
     # 4. Print summary -------------------------------------------------------
     _print_stats(stats, total=total_docs)
