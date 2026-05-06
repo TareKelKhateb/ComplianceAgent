@@ -219,4 +219,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+
+local_download
 local_download/
