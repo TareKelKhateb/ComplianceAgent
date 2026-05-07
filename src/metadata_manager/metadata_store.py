@@ -37,6 +37,10 @@ import sqlite3
 from typing import Optional
 import subprocess
 import shutil
+import sqlite3
+from contextlib import contextmanager
+from typing import List, Dict, Any, Optional
+from datetime import datetime
 
 from .db import (
     init_db,
@@ -61,6 +65,8 @@ from .models import StorageResult, StoredDocument, BatchStorageResult
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CONFIG_FILE_PATH = os.path.join(ROOT_DIR, "config.yaml")
 DEFAULT_DB_PATH = os.path.join(ROOT_DIR, "data", "legal_vault.db")
+
+
 
 
 def _parse_simple_yaml(yaml_text: str) -> dict[str, str]:
@@ -125,6 +131,16 @@ class MetadataStore:
         self.vault_path = _get_vault_path_from_config()
         init_db(self.db_path)
 
+    @contextmanager
+    def _get_connection(self, db_path=None): 
+        """Internal helper to manage SQLite connections."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row 
+        conn.execute("PRAGMA foreign_keys = ON;")
+        try:
+            yield conn
+        finally:
+            conn.close()
     # =======================================================================
     # INSERT
     # =======================================================================
@@ -980,3 +996,376 @@ class MetadataStore:
         except Exception as e:
             print(f"Error: {e}")
             return None        
+                
+    def get_pending_documents(self) -> List[Dict[str, Any]]:
+            """
+            Retrieves documents waiting for OCR processing, including those that 
+            failed previously but have not exceeded the retry limit.
+            """
+            query = """
+                SELECT id, file_path, file_url, title FROM documents 
+                WHERE (download_status = 'downloaded' OR download_status = 'uploaded')
+                AND (
+                    ocr_status = 'pending' 
+                    OR (ocr_status = 'failed' AND retry_count < 3)
+                )
+            """
+            try:
+                with self._get_connection(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.execute(query)
+                    return [dict(row) for row in cursor.fetchall()]
+            except Exception as e:
+                print(f"[!] Error fetching pending documents: {e}")
+                return []
+            
+    def update_ocr_status(self, doc_id: int, status: str) -> StorageResult:
+            """
+            Updates the OCR status of a specific document and handles retry logic.
+            Valid statuses: 'pending', 'processing', 'completed', 'failed'.
+            If status is 'failed', the retry_count is automatically incremented.
+            If status is 'completed', the ocr_processed_at timestamp is set.
+            """
+            processed_at_clause = ""
+            retry_clause = ""
+            params = [status]
+            
+            # 1. Handle timestamp for completed documents
+            if status == 'completed':
+                processed_at_clause = ", ocr_processed_at = ?"
+                params.append(datetime.now().isoformat())
+                
+            # 2. Handle retry logic: increment count only if status is 'failed'
+            if status == 'failed':
+                retry_clause = ", retry_count = retry_count + 1"
+
+            # 3. Add doc_id to params for the WHERE clause
+            params.append(doc_id)
+
+            # 4. Construct the dynamic SQL query
+            query = f"""
+                UPDATE documents 
+                SET ocr_status = ? {processed_at_clause} {retry_clause} 
+                WHERE id = ?
+            """
+            
+            try:
+                with self._get_connection(self.db_path) as conn:
+                    cursor = conn.execute(query, tuple(params))
+                    conn.commit()
+                    
+                    if cursor.rowcount == 0:
+                        return StorageResult(
+                            success=False, 
+                            message=f"Document ID {doc_id} not found."
+                        )
+                    
+                    return StorageResult(
+                        success=True, 
+                        message=f"Status updated to {status} (Retry logic applied if failed)."
+                    )
+            except Exception as e:
+                return StorageResult(
+                    success=False, 
+                    message=f"Database error: {str(e)}"
+                )      
+                           
+    # =======================================================================
+    # TIER 2: CHUNKS OPERATIONS (OCR & RAG)
+    # =======================================================================
+
+    def insert_ocr_chunks(self, chunks: list[dict]) -> StorageResult:
+        """
+        Inserts a batch of text chunks extracted by OCR into document_chunks table.
+        Each dict in chunks list should have: 
+        (doc_id, chunk_index, content, page_number, bbox, chunk_hash)
+        """
+        if not chunks:
+            return StorageResult(success=False, message="No chunks provided.")
+
+        query = """
+            INSERT INTO document_chunks (
+                doc_id, chunk_index, content, page_number, bbox, chunk_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """
+        try:
+            data_tuples = [
+                (c['doc_id'], c['chunk_index'], c['content'], 
+                 c.get('page_number'), c.get('bbox'), c.get('chunk_hash'))
+                for c in chunks
+            ]
+            
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany(query, data_tuples)
+                conn.commit()
+                
+            return StorageResult(
+                success=True, 
+                message=f"Successfully inserted {len(chunks)} chunks for Doc ID {chunks[0]['doc_id']}."
+            )
+        except Exception as e:
+            return StorageResult(success=False, message=f"Failed to insert chunks: {str(e)}")
+
+    def get_chunks_by_document(self, doc_id: int) -> StorageResult:
+        """
+        Retrieves all text chunks for a specific document, ordered by their index.
+        Useful for reconstructing the document text or feeding Tier 3.
+        """
+        query = "SELECT * FROM document_chunks WHERE doc_id = ? ORDER BY chunk_index ASC"
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(query, (doc_id,))
+                rows = cursor.fetchall()
+                
+                chunks = [dict(row) for row in rows]
+                return StorageResult(
+                    success=True,
+                    message=f"Retrieved {len(chunks)} chunks.",
+                    data=chunks
+                )
+        except Exception as e:
+            return StorageResult(success=False, message=f"Error fetching chunks: {str(e)}")
+
+    def search_in_text_content(self, query_text: str, limit: int = 10) -> StorageResult:
+        """
+        Simple Keyword search across all OCR-ed chunks.
+        Note: If you enabled FTS5, this query can be optimized to use 'MATCH'.
+        """
+        sql = """
+            SELECT c.*, d.title 
+            FROM document_chunks c
+            JOIN documents d ON c.doc_id = d.id
+            WHERE c.content LIKE ? 
+            LIMIT ?
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(sql, (f"%{query_text}%", limit))
+                results = [dict(row) for row in cursor.fetchall()]
+                
+                return StorageResult(
+                    success=True,
+                    message=f"Found {len(results)} matches for '{query_text}'.",
+                    data=results
+                )
+        except Exception as e:
+            return StorageResult(success=False, message=f"Search failed: {str(e)}")
+
+    def delete_chunks_by_document(self, doc_id: int) -> StorageResult:
+        """
+        Manually clear chunks for a document (e.g., if you want to re-run OCR).
+        Note: This is also handled by ON DELETE CASCADE if the document itself is deleted.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("DELETE FROM document_chunks WHERE doc_id = ?", (doc_id,))
+                conn.commit()
+                return StorageResult(success=True, message=f"Deleted {cursor.rowcount} chunks.")
+        except Exception as e:
+            return StorageResult(success=False, message=f"Failed to delete chunks: {str(e)}")                       
+
+    def reset_all_chunks(self) -> StorageResult:
+        """
+        ⚠ DANGER: Wipe only the OCR chunks table and reset its ID counter.
+        Useful if you want to re-run the entire OCR pipeline from scratch
+        without losing the document metadata.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM document_chunks")
+                
+                conn.execute(
+                    "DELETE FROM sqlite_sequence WHERE name = 'document_chunks'"
+                )
+                
+                conn.execute("UPDATE documents SET ocr_status = 'pending', ocr_processed_at = NULL")
+                
+                conn.commit()
+                
+            return StorageResult(
+                success=True,
+                message="OCR chunks table wiped and reset. All documents marked as 'pending' OCR.",
+            )
+        except Exception as e:
+            return StorageResult(success=False, message=f"Reset chunks failed: {e}")
+
+    def get_next_version_number(self, doc_id: int) -> int:
+            """
+            Calculates the next version number for a document's chunks by finding the 
+            current maximum version and incrementing it.
+
+            Args:
+                doc_id (int): The primary key of the document.
+
+            Returns:
+                int: The incremented version number (starting from 1).
+            """
+            query = "SELECT MAX(version) FROM document_chunks WHERE doc_id = ?"
+            try:
+                with self._get_connection() as conn:
+                    result = conn.execute(query, (doc_id,)).fetchone()
+                    current_max = result[0] if result[0] is not None else 0
+                    return current_max + 1
+            except Exception as e:
+                # Default to version 1 if any database error occurs during check
+                return 1
+
+    def archive_old_chunks(self, doc_id: int) -> None:
+            """
+            Soft-deletes existing chunks for a document by setting 'is_active' to 0.
+            This preserves historical data for comparison while ensuring only the 
+            latest version is fetched during standard queries.
+
+            Args:
+                doc_id (int): The primary key of the document to archive.
+            """
+            query = "UPDATE document_chunks SET is_active = 0 WHERE doc_id = ?"
+            try:
+                with self._get_connection() as conn:
+                    conn.execute(query, (doc_id,))
+                    conn.commit()
+            except Exception as e:
+                # Log error or handle as needed for your pipeline's robustness
+                print(f"Error archiving chunks for Doc ID {doc_id}: {e}")
+
+    def save_chunks(self, chunks: List[Dict[str, Any]]) -> StorageResult:
+                """
+                Performs a bulk insert of OCR chunks including versioning and diff status.
+
+                Args:
+                    chunks (List[Dict[str, Any]]): A list of chunk dictionaries.
+                """
+                if not chunks:
+                    return StorageResult(success=False, message="No chunks to save.")
+
+                # Updated Query to include Diff Results
+                query = """
+                    INSERT INTO document_chunks (
+                        doc_id, chunk_index, content, bbox, 
+                        page_number, chunk_hash, is_active, version, 
+                        created_at, change_type, old_content
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                
+                try:
+                    data_to_insert = [
+                        (
+                            c.get('doc_id'), 
+                            c.get('chunk_index'), 
+                            c.get('content'), 
+                            c.get('bbox'), 
+                            c.get('page_number'), 
+                            c.get('chunk_hash'), 
+                            c.get('is_active', 1), 
+                            c.get('version'), 
+                            c.get('created_at'),
+                            c.get('change_type', 'unchanged'), # Default to unchanged if not analyzed
+                            c.get('old_content', None)         # Added for modified chunks
+                        )
+                        for c in chunks
+                    ]
+                    
+                    with self._get_connection() as conn:
+                        conn.executemany(query, data_to_insert)
+                        conn.commit()
+                        
+                    version_num = chunks[0].get('version', 'N/A')
+                    return StorageResult(
+                        success=True, 
+                        message=f"Successfully saved {len(chunks)} chunks (Version {version_num})."
+                    )
+                except Exception as e:
+                    return StorageResult(success=False, message=f"Failed to save chunks: {str(e)}")
+
+    def get_chunks_by_version(self, doc_id: int, version: int) -> List[Dict[str, Any]]:
+        """
+        Retrieves all chunks belonging to a specific version of a document.
+        Useful for auditing or restoring old data.
+        """
+        query = """
+            SELECT chunk_index, content, bbox, page_number, chunk_hash, 
+                   is_active, version, created_at, change_type, old_content
+            FROM document_chunks 
+            WHERE doc_id = ? AND version = ?
+            ORDER BY chunk_index ASC
+        """
+        try:
+            with self._get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(query, (doc_id, version))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"[!] Error retrieving chunks by version: {e}")
+            return []
+
+    def get_latest_chunks(self, doc_id: int) -> List[Dict[str, Any]]:
+        """
+        Retrieves the current active (latest) chunks for a document.
+        This is used in the OCR Pipeline to provide a base for comparison (Diff).
+        """
+        query = """
+            SELECT chunk_index, content, bbox, page_number, chunk_hash, 
+                   is_active, version, created_at
+            FROM document_chunks 
+            WHERE doc_id = ? AND is_active = 1
+            ORDER BY chunk_index ASC
+        """
+        try:
+            with self._get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(query, (doc_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"[!] Error retrieving latest active chunks: {e}")
+            return []
+
+
+ ### FOR LLM USAGE 
+    def get_active_chunks(self, doc_id: int) -> List[Dict[str, Any]]:
+        """
+        Retrieves only the most recent (active) chunks for a document.
+        Used for standard RAG/Question-Answering.
+        """
+        query = """
+            SELECT chunk_index, content, page_number, chunk_hash
+            FROM document_chunks 
+            WHERE doc_id = ? AND is_active = 1
+            ORDER BY chunk_index ASC
+        """
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, (doc_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_chunk_history(self, doc_id: int, chunk_index: int) -> List[Dict[str, Any]]:
+        """
+        Retrieves all historical versions of a specific chunk.
+        Allows the LLM to explain what changed between versions.
+        """
+        query = """
+            SELECT version, content, change_type, old_content, created_at
+            FROM document_chunks 
+            WHERE doc_id = ? AND chunk_index = ?
+            ORDER BY version DESC
+        """
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, (doc_id, chunk_index))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_version_changes(self, doc_id: int, version: int) -> List[Dict[str, Any]]:
+        """
+        Retrieves only the modified or added chunks for a specific version.
+        Used for generating 'What's New' summaries via LLM.
+        """
+        query = """
+            SELECT chunk_index, content, change_type, old_content
+            FROM document_chunks 
+            WHERE doc_id = ? AND version = ? AND change_type IN ('modified', 'added', 'deleted')
+        """
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, (doc_id, version))
+            return [dict(row) for row in cursor.fetchall()]        

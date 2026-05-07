@@ -24,8 +24,11 @@ from urllib.parse import urlparse
 
 import requests
 
+# pyrefly: ignore [missing-import]
 from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
+# pyrefly: ignore [missing-import]
 from src.metadata_manager.metadata_store import MetadataStore
+# pyrefly: ignore [missing-import]
 from src.metadata_manager.models import StorageResult
 
 # ---------------------------------------------------------------------------
@@ -1538,3 +1541,5 @@ class ParsingMetaDataExtractor:
     
     def reset_metadate(self):
         self.metadata_store.reset_all_data()
+
+    

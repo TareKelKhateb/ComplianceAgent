@@ -12,6 +12,7 @@ import json
 import logging
 import sys
 
+# pyrefly: ignore [missing-import]
 from src.Parsing_and_metadata_extractor.parsing_and_metadata_extractor import (
     ParsingMetaDataExtractor,
 )
@@ -90,3 +91,29 @@ if __name__ == "__main__":
 
     # 4. Print summary -------------------------------------------------------
     _print_stats(stats, total=total_docs)
+
+    # ---------------------------------------------------------------------------
+    # 5. TEST: DagsHub Push (Using the official function 🚀)
+    # ---------------------------------------------------------------------------
+    _print_banner("🧪 TESTING: DagsHub Push Experiment")
+    
+    test_pdf_path = r"D:\ITI\dummy.pdf"
+    test_url = "https://example.com/dummy-test-file"
+    # الفانكشن محتاجة Hash، هنبعت أي Hash وهمي للتجربة (64 حرف)
+    fake_hash = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z0123456789abc"
+
+    logger.info("Starting push test for: %s", test_pdf_path)
+    
+    # استخدام الاسم الصحيح للفانكشن والبارامترات المطلوبة
+    sync_success = parser.push_to_dagshub(
+        local_pdf_path=test_pdf_path, 
+        file_url=test_url,
+        content_hash=fake_hash
+    )
+
+    if sync_success:
+        _print_banner("✅ PUSH TEST PASSED!")
+        print(f"File should now be in the vault with a name like: dummy__{fake_hash[:8]}.pdf")
+    else:
+        _print_banner("❌ PUSH TEST FAILED")
+        print("Check the logs above to see if it's a DVC or Git error.")

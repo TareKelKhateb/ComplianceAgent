@@ -55,6 +55,10 @@ class StoredDocument:
     download_status: str                       # "pending" | "downloaded" | "failed"
     created_at: str                            # ISO timestamp of when record was inserted
 
+    ocr_status: str = "pending"
+    ocr_processed_at: Optional[str] = None    
+    retry_count: int = 0
+
 
 @dataclass
 class StorageResult:
@@ -81,3 +85,20 @@ class BatchStorageResult:
     inserted_count: int
     failed_count: int
     errors: list[str] = field(default_factory=list)
+
+@dataclass
+class StoredChunk:
+    """
+    Represents a single OCR chunk stored in the database.
+    """
+    id: Optional[int]
+    doc_id: int
+    chunk_index: int
+    content: str
+    bbox: Optional[str]
+    page_number: Optional[int]
+    chunk_hash: str    
+    is_active: int = 1 
+    version: int = 1
+    change_type: str = "unchanged" 
+    old_content: Optional[str] = None 

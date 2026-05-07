@@ -7,7 +7,7 @@ Upper layers (storage_manager.py) call these functions — they never touch SQL 
 
 import sqlite3
 import os
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime, timezone
 
 from .models import StoredDocument, HashCheckResult, BatchStorageResult
@@ -52,53 +52,86 @@ def _row_to_document(row: sqlite3.Row) -> StoredDocument:
 # Schema
 # ---------------------------------------------------------------------------
 
+import os
+import sqlite3
+
 def init_db(db_path: str) -> None:
     """
-    Create the database and tables if they don't exist yet.
-    Safe to call multiple times (idempotent).
+    Initialize the database and ensure the schema is up to date.
+    This function creates missing tables and adds missing columns to existing tables
+    without affecting current data (Schema Evolution).
+    
+    Args:
+        db_path (str): The filesystem path to the SQLite database file.
     """
+    # Ensure the directory for the database file exists
     parent_dir = os.path.dirname(os.path.abspath(db_path))
     os.makedirs(parent_dir, exist_ok=True)
 
-    with _get_connection(db_path) as conn:
+    with sqlite3.connect(db_path) as conn:
+        # 1. Create the primary 'documents' table if it doesn't exist
         conn.execute("""
             CREATE TABLE IF NOT EXISTS documents (
-                id               INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                -- Scraped metadata
-                file_url         TEXT    NOT NULL,
-                title            TEXT,
-                document_type    TEXT,
-                issuing_entity   TEXT,
-                document_number  TEXT,
-                year             TEXT,
-                date             TEXT,
-                language         TEXT,
-
-                -- Storage layer fields
-                sha256_hash      TEXT    NOT NULL,
-                version          INTEGER NOT NULL DEFAULT 1,
-                is_last          INTEGER NOT NULL DEFAULT 1,  -- 1=True, 0=False
-                file_path        TEXT,
-                file_size_bytes  INTEGER,
-                download_status  TEXT    NOT NULL DEFAULT 'pending',
-                created_at       TEXT    NOT NULL
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_url TEXT NOT NULL,
+                sha256_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
         """)
 
-        # Index on (file_url, version) for fast hash lookups
+        # 2. List of columns that might be added to the 'documents' table over time.
+        # Adding an existing column name here will NOT cause issues due to the try-except block.
+        new_columns = [
+            ("title", "TEXT"),
+            ("document_type", "TEXT"),
+            ("issuing_entity", "TEXT"),
+            ("document_number", "TEXT"),
+            ("year", "TEXT"),
+            ("date", "TEXT"),
+            ("language", "TEXT"),
+            ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ("is_last", "INTEGER NOT NULL DEFAULT 1"),
+            ("file_path", "TEXT"),
+            ("file_size_bytes", "INTEGER"),
+            ("download_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("ocr_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("ocr_processed_at", "TEXT"),
+            ("retry_count", "INTEGER NOT NULL DEFAULT 0")
+        ]
+        
+        for col_name, col_type in new_columns:
+            try:
+                # Attempt to add the column to the table
+                conn.execute(f"ALTER TABLE documents ADD COLUMN {col_name} {col_type}")
+            except sqlite3.OperationalError:
+                # Column already exists, safe to ignore
+                pass
+
+        # 3. Create the 'document_chunks' table to store OCR output and text segments
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_url_version
-            ON documents (file_url, version)
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc_id           INTEGER NOT NULL,
+                chunk_index      INTEGER NOT NULL,
+                content          TEXT    NOT NULL,
+                bbox             TEXT,
+                page_number      INTEGER,
+                chunk_hash       TEXT    NOT NULL,
+                is_active        INTEGER NOT NULL DEFAULT 1, 
+                version          INTEGER NOT NULL DEFAULT 1, 
+                created_at       TEXT,     
+                change_type      TEXT    DEFAULT 'unchanged',
+                old_content      TEXT,             
+                FOREIGN KEY (doc_id) REFERENCES documents (id) ON DELETE CASCADE
+            )
         """)
 
-        # Index on is_last for quickly finding current versions
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_is_last
-            ON documents (is_last)
-        """)
+        # 4. Create performance indices for faster queries
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocr_status ON documents (ocr_status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks (doc_id)")
 
         conn.commit()
+        
 
 
 # ---------------------------------------------------------------------------
@@ -402,3 +435,85 @@ def insert_documents_batch(db_path: str, docs: list[StoredDocument]) -> BatchSto
         failed_count=len(docs) - inserted_count,
         errors=errors
     )
+
+
+# ---------------------------------------------------------------------------
+# OCR Operations (Layer 3 & Pipeline Helpers)
+# ---------------------------------------------------------------------------
+
+def get_pending_ocr_documents(db_path: str) -> list[StoredDocument]:
+    """
+    Fetch documents that are downloaded successfully but not yet processed by OCR.
+    
+    Returns:
+        list[StoredDocument]: List of documents ready for processing.
+    """
+    with _get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM documents WHERE download_status = 'completed' AND ocr_status = 'pending'"
+        ).fetchall()
+    return [_row_to_document(r) for r in rows]
+
+
+def update_ocr_status(db_path: str, document_id: int, status: str) -> None:
+    """
+    Update the OCR status of a document (e.g., to 'processing', 'completed', or 'failed').
+    """
+    with _get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE documents SET ocr_status = ? WHERE id = ?",
+            (status, document_id)
+        )
+        conn.commit()
+
+
+def insert_document_chunks_batch(db_path: str, chunks: list[dict[str, Any]]) -> bool:
+    """
+    Layer 3: Bulk insert OCR chunks and finalize the document's OCR lifecycle.
+    
+    Args:
+        db_path (str): Path to the SQLite database.
+        chunks (list[dict]): List of processed chunks from Layer 2.
+    
+    Returns:
+        bool: True if transaction succeeded, False otherwise.
+    """
+    if not chunks:
+        return False
+
+    doc_id: int = chunks[0]['doc_id']
+    now: str = datetime.now(timezone.utc).isoformat()
+    
+    # Map dictionary keys to database columns
+    payload = [
+        (
+            c['doc_id'], 
+            c['chunk_index'], 
+            c['content'], 
+            str(c.get('bbox', '')), # Ensure bbox is a string
+            c.get('page_number'), 
+            c['chunk_hash']
+        ) for c in chunks
+    ]
+
+    try:
+        with _get_connection(db_path) as conn:
+            # 1. Insert all chunks in one batch
+            conn.executemany("""
+                INSERT INTO document_chunks (
+                    doc_id, chunk_index, content, bbox, page_number, chunk_hash
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """, payload)
+
+            # 2. Update parent record to 'completed' and set the timestamp
+            conn.execute("""
+                UPDATE documents 
+                SET ocr_status = 'completed', ocr_processed_at = ? 
+                WHERE id = ?
+            """, (now, doc_id))
+            
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        print(f"[-] Database error during chunk storage: {e}")
+        return False
