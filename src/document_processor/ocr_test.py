@@ -20,7 +20,7 @@ def main():
     db = MetadataStore(db_path)
     
     print("="*50)
-    print("🚀 FCC Regulatory Compliance - Full System Test")
+    print(" FCC Regulatory Compliance - Full System Test")
     print("="*50)
     
     # 2. STEP 1: Full Reset
