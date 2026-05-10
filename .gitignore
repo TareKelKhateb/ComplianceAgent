@@ -248,3 +248,5 @@ local_download/
 .dvc/tmp/
 .dvc/config.local
 dvc.lock
+output_markdown
+output_markdown/

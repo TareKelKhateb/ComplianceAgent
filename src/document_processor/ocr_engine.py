@@ -20,10 +20,17 @@ class DocumentProcessor:
             lang (str): Primary language (unused here as we load both 'ar' and 'en').
         """
         # Initialize EasyOCR with Arabic and English support
-        self.reader = easyocr.Reader(['ar', 'en'], gpu=False)
-        print("[!] EasyOCR: Initialized in CPU mode for maximum stability.")
+        self.reader = easyocr.Reader(['ar', 'en'], gpu=True)
+        print("[!] EasyOCR: Initialized in GPU mode for faster processing.")
         
-        self.article_pattern: re.Pattern = re.compile(r'^(مادة|المادة)\s+(\d+|[أ-ي]+)')
+
+        
+        self.article_pattern = re.compile(
+            r'^(مادة|المادة)'
+            r'\s*[\(\（]?\s*'
+            r'(\d+|[٠-٩]+|[أ-ي]+)'
+            r'\s*[\)\）]?\s*:?\s*$'
+        )
 
     def process_layer_one(self, pdf_path: str, doc_id: int) -> List[Dict[str, Any]]:
         """
@@ -62,7 +69,7 @@ class DocumentProcessor:
 
     def _get_pdf_pages_generator(self, pdf_path: str) -> Generator[Image.Image, None, None]:
         """Yields PDF pages as PIL Images."""
-        return convert_from_path(pdf_path, dpi=300, thread_count=2)
+        return convert_from_path(pdf_path, dpi=300, thread_count=2, poppler_path=r"C:\Program Files\Release-26.02.0-0\poppler-26.02.0\Library\bin")
 
     def _format_page_elements(self, results: List[Any], doc_id: int, 
                                 page_num: int, start_idx: int) -> List[Dict[str, Any]]:
