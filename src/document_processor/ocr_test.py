@@ -35,8 +35,7 @@ def main():
         return
 
     # 3. STEP 2: Initialize the Pipeline Manager
-    # This will use the Smart Chunking logic (400 chars) we implemented
-    manager = OCRPipeline(metadata_store=db, lang='ar')
+    manager = OCRPipeline(metadata_store=db)
     
     print("\n" + "="*50)
     print("[*] Phase 2: Processing All Documents in the Queue")
