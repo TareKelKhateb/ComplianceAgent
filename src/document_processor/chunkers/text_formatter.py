@@ -1,33 +1,57 @@
+# src/document_processor/chunkers/text_formatter.py
+
 import re
 
 class TextFormatter:
     """
-    Final cleaning layer before chunking.
-    Ensures legal articles are consistently tagged regardless of OCR source.
+    Standardizes and cleans text extracted from OCR engines.
+    Provides different levels of cleaning based on the source quality.
     """
-    def __init__(self):
-        # Pattern to catch Arabic articles headers 
+
+    def __init__(self) -> None:
+        # Pattern to identify legal articles 
         self.article_pattern = re.compile(
-            r'^(مادة|المادة)'
-            r'\s*[\(\（]?\s*'
-            r'(\d+|[٠-٩]+|[أ-ي]+)'
-            r'\s*[\)\）]?\s*:?\s*$',
+            r'^(مادة|المادة)\s*(\d+|[٠-٩]+|[أ-ي]+)', 
             re.MULTILINE
         )
 
-    def clean_and_format(self, text: str) -> str:
+    def light_format(self, text: str) -> str:
         """
-        Standardizes the output for downstream semantic analysis.
+        Applies minimal formatting to high-quality Markdown (e.g., from Mistral).
+        Only ensures that legal articles have proper Markdown headers.
         """
         lines = text.split('\n')
-        processed_lines = []
-
+        formatted_lines = []
+        
         for line in lines:
             stripped = line.strip()
-            if self.article_pattern.match(stripped):
-                # We enforce a clean Markdown H3 for all article headers
-                processed_lines.append(f"### {stripped}")
+            # If it's an article but missing the header tag, add it
+            if self.article_pattern.match(stripped) and not stripped.startswith('#'):
+                formatted_lines.append(f"### {stripped}")
             else:
-                processed_lines.append(stripped)
+                formatted_lines.append(line)
+                
+        return "\n".join(formatted_lines)
 
-        return "\n".join(processed_lines)
+    def full_clean_format(self, text: str) -> str:
+        """
+        Performs heavy cleaning and regex-based formatting for raw OCR (e.g., EasyOCR).
+        Fixes whitespaces and enforces structural headers.
+        """
+        # Basic noise reduction: remove multiple newlines and leading/trailing spaces
+        text = re.sub(r'\n\s*\n', '\n\n', text).strip()
+        
+        lines = text.split('\n')
+        formatted_lines = []
+        
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+                
+            if self.article_pattern.match(stripped):
+                formatted_lines.append(f"### {stripped}")
+            else:
+                formatted_lines.append(stripped)
+                
+        return "\n".join(formatted_lines)
