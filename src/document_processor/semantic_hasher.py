@@ -48,6 +48,7 @@ class SemanticHasher:
         # Arabic Normalization (Standardizing Alef and Ta-Marbuta)
         text = re.sub(r'[إأآ]', 'ا', text)
         text = re.sub(r'ة\b', 'ه', text)
+        text = re.sub(r'[يى]\b', 'ي', text)
         
         return text.strip()
 
