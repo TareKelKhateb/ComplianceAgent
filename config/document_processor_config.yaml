@@ -1,12 +1,12 @@
 processing_pipeline:
   # --- Extractor Strategy ---
   # Options: "mistral" (high-quality, API-based), "easyocr" (local, GPU-based)
-  extractor_type: "easyocr"
+  extractor_type: "mistral"
 
   # --- Chunker Strategy ---
   # Options: "semantic" (split by article headers, best for Diff Engine)
   #          "overlapping" (fixed-size windows, best for general RAG)
-  chunker_type: "overlapping"
+  chunker_type: "semantic"
 
   # --- Mistral Extractor Settings ---
   mistral:

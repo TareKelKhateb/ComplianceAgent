@@ -2,10 +2,10 @@
 test.py — Data Ingestion Pipeline Entry-Point
 ----------------------------------------------
 Thin entry-point: loads a scraped JSON file and delegates the entire
-ingestion pipeline to ``ParsingMetaDataExtractor.process_pipeline()``.
+ingestion pipeline to ``ParsingMetaDataExtractor.process_pipeline_general()``.
 
 The pipeline will:
-  1. Download each PDF.
+  1. Check for local files first or download each PDF.
   2. Insert / update the metadata DB record.
   3. Push the file to DagsHub via DVC under a content-addressed filename
      (``<stem>__<hash8>.pdf``) so vault conflicts are impossible even when
@@ -98,7 +98,7 @@ if __name__ == "__main__":
 
     # 3. Run the pipeline (with DagsHub push enabled) -----------------------
     _print_banner("⚙️   Running Ingestion Pipeline")
-    stats = parser.process_pipeline(
+    stats = parser.process_pipeline_general(
         scraped_data=scraped_data,
         push_to_dagshub=True,   # set False to skip DVC push (dry-run)
     )
