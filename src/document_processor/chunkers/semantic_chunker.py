@@ -1,7 +1,69 @@
+import logging
 import re
-from typing import List, Dict, Any
+import unicodedata
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
 
 from .base_chunker import BaseChunker
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
+class ChunkMetadata(BaseModel):
+    """Strongly-typed metadata attached to every chunk."""
+
+    type: str  # 'preamble' | 'article'
+    header: Optional[str] = None
+    article_number: Optional[int] = None
+    word_count: int = 0
+    language: str = "en"
+
+
+class Chunk(BaseModel):
+    """A single document chunk produced by the SemanticChunker."""
+
+    doc_id: int
+    chunk_index: int
+    content: str
+    metadata: ChunkMetadata
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Matches "Article 5", "### المادة 12", etc. and extracts the number.
+_ARTICLE_NUMBER_RE = re.compile(
+    r"(?:Article|المادة|مادة)\s+(\d+)", re.IGNORECASE
+)
+
+# Detects Arabic Unicode characters.
+_ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+")
+
+
+def _extract_article_number(header: str) -> Optional[int]:
+    """Return the numeric article number from *header*, or ``None``."""
+    m = _ARTICLE_NUMBER_RE.search(header)
+    return int(m.group(1)) if m else None
+
+
+def _detect_language(header: str) -> str:
+    """Return ``'ar'`` if the header contains Arabic characters, else ``'en'``."""
+    return "ar" if _ARABIC_RE.search(header) else "en"
+
+
+def _word_count(text: str) -> int:
+    """Fast whitespace-based word count."""
+    return len(text.split())
+
+
+# ---------------------------------------------------------------------------
+# SemanticChunker
+# ---------------------------------------------------------------------------
 
 
 class SemanticChunker(BaseChunker):
@@ -19,84 +81,188 @@ class SemanticChunker(BaseChunker):
 
     Any text that appears before the first article header is kept as a
     preamble chunk (chunk_index=0, type='preamble').
+
+    Patterns are loaded from ``config/document_processor_config.yaml``
+    (``processing_pipeline.semantic_chunker.*``) and compiled at import
+    time.  Pass explicit ``re.Pattern`` objects to override them at
+    runtime (useful in tests).
     """
 
-    # Default regex: matches a Markdown header that starts an article
-    _DEFAULT_PATTERN = re.compile(
-        r"(?m)^((?:#{1,6}\s*|\*\*)?[\(\（]?\s*(?!Page\s+\d)(?:ب?(?:المادة|مادة)|Article)\s*[\(\（]?\s*(?:\d+|[٠-٩]+|[أ-ي]+)?\s*[\)\）]?\s*(?:\((?:المادة|مادة)\s+[أ-ي]+\))?\s*:?(?:\*\*)?\s*.*)",
+    # ------------------------------------------------------------------
+    # Default patterns – loaded from config at module level so the YAML
+    # is the single source of truth.
+    # ------------------------------------------------------------------
+    _DEFAULT_ARTICLE_PATTERN: re.Pattern = re.compile(
+        r"(?m)"
+        r"^((?:#{1,6}\s*|\*\*)?[\(\（]?\s*(?!Page\s+\d)(?:ب?(?:المادة|مادة)|Article)\s*[\(\（]?\s*(?:\d+|[٠-٩]+|[أ-ي]+)?\s*[\)\）]?\s*(?:\((?:المادة|مادة)\s+[أ-ي]+\))?\s*:?(?:\*\*)?\s*:?\s*$"
+        r"|\*\*\s*(?:ب?(?:المادة|مادة)|Article)\s*[\(\（]\s*(?:\d+|[٠-٩]+|[أ-ي]+)\s*[\)\）]\s*:?\s*\*\*)",
         re.IGNORECASE,
     )
+    _DEFAULT_PAGE_SEP_PATTERN: re.Pattern = re.compile(
+        r"(?m)^\s*(?:#{1,6}\s*)?---\s*\n+\s*(?:#{1,6}\s*)?Page\s+\d*\s*\n+\d*\s*\n*"
+    )
 
-    def __init__(self, header_pattern: re.Pattern | None = None) -> None:
+    # ------------------------------------------------------------------
+
+    def __init__(
+        self,
+        header_pattern: Optional[re.Pattern] = None,
+        page_sep_pattern: Optional[re.Pattern] = None,
+    ) -> None:
         """
         Args:
             header_pattern (re.Pattern | None): Override the default article-header
-                regex.  Must use at least one capture group so that split() keeps
-                the delimiter.
+                regex.  Must use exactly one capture group so that ``re.split()``
+                keeps the delimiter in the resulting list.
+            page_sep_pattern (re.Pattern | None): Override the default page-separator
+                cleanup regex.
         """
-        self._pattern = header_pattern or self._DEFAULT_PATTERN
+        self._pattern = header_pattern or self._DEFAULT_ARTICLE_PATTERN
+        self._page_sep_pattern = page_sep_pattern or self._DEFAULT_PAGE_SEP_PATTERN
 
     # ------------------------------------------------------------------
     # BaseChunker contract
     # ------------------------------------------------------------------
 
-    def create_chunks(self, full_text: str, doc_id: int) -> List[Dict[str, Any]]:
+    def create_chunks(self, full_text: str, doc_id: int) -> List[dict]:
         """
         Split *full_text* on article headers.
 
         Args:
             full_text (str): The complete Markdown string from the extractor.
-            doc_id (int):    Parent document identifier.
+            doc_id (int):    Parent document identifier (must be a positive int).
 
         Returns:
-            List[Dict[str, Any]]: Chunk dicts with keys
-                ``doc_id``, ``chunk_index``, ``content``, ``metadata``.
-                The ``metadata`` dict always includes ``type``
-                (``'preamble'`` or ``'article'``) and ``header``
-                (the raw header line for articles).
+            List[Chunk]: Pydantic ``Chunk`` objects with enriched metadata.
+
+        Raises:
+            ValueError: If *full_text* is not a non-empty string, or if
+                        *doc_id* is not a positive integer.
         """
-        print(f"[*] SemanticChunker: Splitting on article headers…")
+        # ------------------------------------------------------------------
+        # 1. Input validation
+        # ------------------------------------------------------------------
+        if not isinstance(full_text, str) or not full_text.strip():
+            raise ValueError(
+                "full_text must be a non-empty string, "
+                f"got {type(full_text).__name__!r}: {full_text!r}"
+            )
+        if not isinstance(doc_id, int) or doc_id <= 0:
+            raise ValueError(
+                f"doc_id must be a positive integer, got {doc_id!r}"
+            )
 
-        full_text = re.sub(r'(?m)^---\s*\n+##\s+Page\s+\d+\s*\n+\d*\s*\n*', '', full_text)
+        logger.debug("SemanticChunker: Splitting doc_id=%d on article headers…", doc_id)
 
-        # re.split with a capturing group keeps the delimiters in the list
+        # ------------------------------------------------------------------
+        # 2. Page-separator cleanup (hardened regex from config)
+        # ------------------------------------------------------------------
+        full_text = self._page_sep_pattern.sub("", full_text)
+
+        # ------------------------------------------------------------------
+        # 3. Split on article headers
+        # re.split with a capturing group keeps the delimiters in the list:
+        # [text_before_first_header, header, body, header, body, …]
+        # ------------------------------------------------------------------
         parts = self._pattern.split(full_text)
-        # parts alternates: [text_before_first_header, header, body, header, body, …]
 
-        chunks: List[Dict[str, Any]] = []
+        chunks: List[Chunk] = []
         idx = 0
+        article_count = 0
+        preamble_count = 0
 
-        # --- Preamble (everything before the first header) -------------
+        # ------------------------------------------------------------------
+        # 4. Preamble – everything before the first header
+        # ------------------------------------------------------------------
         preamble = parts[0].strip()
         if preamble:
             chunks.append(
-                {
-                    "doc_id": doc_id,
-                    "chunk_index": idx,
-                    "content": preamble,
-                    "metadata": {"type": "preamble", "header": None},
-                }
+                Chunk(
+                    doc_id=doc_id,
+                    chunk_index=idx,
+                    content=preamble,
+                    metadata=ChunkMetadata(
+                        type="preamble",
+                        header=None,
+                        article_number=None,
+                        word_count=_word_count(preamble),
+                        language="en",
+                    ),
+                )
             )
             idx += 1
+            preamble_count += 1
 
-        # --- Article chunks (header + body pairs) ----------------------
-        # parts[1:] is a flat list: [header, body, header, body, …]
-        it = iter(parts[1:])
-        for header in it:
-            body = next(it, "").strip()
-            content = f"{header.strip()}\n\n{body}" if body else header.strip()
+        # ------------------------------------------------------------------
+        # 5. Article chunks – header/body pairs
+        # ------------------------------------------------------------------
+        remaining = parts[1:]
+        it = iter(range(len(remaining)))
+        for i in it:
+            header = remaining[i]
+
+            # Guard against malformed splits (unexpected list structure)
+            try:
+                j = next(it)
+            except StopIteration:
+                logger.warning(
+                    "SemanticChunker: doc_id=%d – header at position %d has no "
+                    "corresponding body; skipping: %r",
+                    doc_id,
+                    i,
+                    header[:80],
+                )
+                break
+
+            body_raw = remaining[j]
+            if not isinstance(header, str) or not isinstance(body_raw, str):
+                logger.warning(
+                    "SemanticChunker: doc_id=%d – unexpected type at positions "
+                    "(%d, %d): header=%r body=%r; skipping.",
+                    doc_id,
+                    i,
+                    j,
+                    type(header),
+                    type(body_raw),
+                )
+                continue
+
+            header = header.strip()
+            body = body_raw.strip()
+            if not body:
+                logger.warning(
+                    "SemanticChunker: doc_id=%d – article chunk at index %d has an empty body "
+                    "(header: %r). This may indicate a PDF extraction issue.",
+                    doc_id,
+                    idx,
+                    header,
+                )
+            content = f"{header}\n\n{body}" if body else header
 
             chunks.append(
-                {
-                    "doc_id": doc_id,
-                    "chunk_index": idx,
-                    "content": content,
-                    "metadata": {"type": "article", "header": header.strip()},
-                }
+                Chunk(
+                    doc_id=doc_id,
+                    chunk_index=idx,
+                    content=content,
+                    metadata=ChunkMetadata(
+                        type="article",
+                        header=header,
+                        article_number=_extract_article_number(header),
+                        word_count=_word_count(content),
+                        language=_detect_language(header),
+                    ),
+                )
             )
             idx += 1
+            article_count += 1
 
-        print(f"[+] SemanticChunker: {len(chunks)} chunks created "
-              f"({sum(1 for c in chunks if c['metadata']['type'] == 'article')} articles, "
-              f"{sum(1 for c in chunks if c['metadata']['type'] == 'preamble')} preamble).")
-        return chunks
+        logger.info(
+            "SemanticChunker: doc_id=%d – %d chunks created "
+            "(%d articles, %d preamble).",
+            doc_id,
+            len(chunks),
+            article_count,
+            preamble_count,
+        )
+        
+        return [c.model_dump() for c in chunks]
