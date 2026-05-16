@@ -130,7 +130,7 @@ class OCRPipeline:
         self._save_full_text: bool = self._cfg.get("save_full_text", True)
         self._full_text_dir: str = self._cfg.get("full_text_output_dir", "output_markdown")
 
-    def run(self, pdf_path: str, doc_id: int) -> bool:
+    def run(self, pdf_path: str, doc_id: str) -> bool:
         """
         Execute the full processing pipeline for one document version.
         """
@@ -169,7 +169,7 @@ class OCRPipeline:
     # Private Implementation Methods
     # ------------------------------------------------------------------
 
-    def _prepare_pipeline_session(self, doc_id: int):
+    def _prepare_pipeline_session(self, doc_id: str):
         """Initializes the processing session by fetching metadata."""
         self.store.update_ocr_status(doc_id, "processing")
         base_chunks = self.store.get_latest_chunks(doc_id)
@@ -177,7 +177,7 @@ class OCRPipeline:
         created_at = datetime.now().isoformat()
         return base_chunks, next_ver, created_at
 
-    def _execute_extraction_layer(self, pdf_path: str, doc_id: int) -> Optional[str]:
+    def _execute_extraction_layer(self, pdf_path: str, doc_id: str) -> Optional[str]:
         """Handles Layer 1: PDF Extraction."""
         print(f"[*] Layer 1: Extracting text using {type(self.extractor).__name__}...")
         full_text: str = self.extractor.extract_text(pdf_path)
@@ -192,7 +192,7 @@ class OCRPipeline:
             
         return full_text
 
-    def _execute_chunking_layer(self, full_text: str, doc_id: int) -> Optional[List[Dict[str, Any]]]:
+    def _execute_chunking_layer(self, full_text: str, doc_id: str) -> Optional[List[Dict[str, Any]]]:
         """Splits text into chunks."""
         print(f"[*] Chunking: Using {type(self.chunker).__name__}...")
         raw_chunks = self.chunker.create_chunks(full_text, doc_id)
@@ -226,7 +226,7 @@ class OCRPipeline:
         print(f"[*] Layer 3: Comparing with {len(base_chunks)} previous chunks…")
         return self.diff_engine.compare_documents(base_chunks, refined_chunks)
 
-    def _finalize_pipeline_results(self, doc_id: int, final_chunks: List[Dict[str, Any]], base_chunks: List[Dict[str, Any]]) -> bool:
+    def _finalize_pipeline_results(self, doc_id: str, final_chunks: List[Dict[str, Any]], base_chunks: List[Dict[str, Any]]) -> bool:
         """Saves data to DB and updates status."""
         print(f"[*] Synchronizing DB for Doc ID {doc_id}…")
         self.store.archive_old_chunks(doc_id)
@@ -242,7 +242,7 @@ class OCRPipeline:
             self.store.update_ocr_status(doc_id, "failed")
             return False
 
-    def _handle_pipeline_failure(self, doc_id: int, exc: Exception):
+    def _handle_pipeline_failure(self, doc_id: str, exc: Exception):
         """Logs errors and updates DB status."""
         print(f"[!] Pipeline error for Doc ID {doc_id}: {exc}")
         self.store.update_ocr_status(doc_id, "failed")

@@ -38,6 +38,8 @@ def _row_to_document(row: sqlite3.Row) -> StoredDocument:
         year=row["year"],
         date=row["date"],
         language=row["language"],
+        category=row["category"],
+        subcategory=row["subcategory"],
         sha256_hash=row["sha256_hash"],
         version=row["version"],
         is_last=bool(row["is_last"]),
@@ -72,7 +74,7 @@ def init_db(db_path: str) -> None:
         # 1. Create the primary 'documents' table if it doesn't exist
         conn.execute("""
             CREATE TABLE IF NOT EXISTS documents (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT PRIMARY KEY,
                 file_url TEXT NOT NULL,
                 sha256_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
@@ -89,6 +91,8 @@ def init_db(db_path: str) -> None:
             ("year", "TEXT"),
             ("date", "TEXT"),
             ("language", "TEXT"),
+            ("category", "TEXT"),
+            ("subcategory", "TEXT"),
             ("version", "INTEGER NOT NULL DEFAULT 1"),
             ("is_last", "INTEGER NOT NULL DEFAULT 1"),
             ("file_path", "TEXT"),
@@ -111,7 +115,7 @@ def init_db(db_path: str) -> None:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS document_chunks (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                doc_id           INTEGER NOT NULL,
+                doc_id           TEXT NOT NULL,
                 chunk_index      INTEGER NOT NULL,
                 content          TEXT    NOT NULL,
                 bbox             TEXT,
@@ -212,13 +216,14 @@ def insert_document(
         cursor = conn.execute(
             """
             INSERT INTO documents (
-                file_url, title, document_type, issuing_entity,
-                document_number, year, date, language,
+                id, file_url, title, document_type, issuing_entity,
+                document_number, year, date, language, category, subcategory,
                 sha256_hash, version, is_last,
                 file_path, file_size_bytes, download_status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             """,
             (
+                data.get("id"),
                 file_url,
                 data.get("title"),
                 data.get("document_type"),
@@ -227,6 +232,8 @@ def insert_document(
                 data.get("year"),
                 data.get("date"),
                 data.get("language"),
+                data.get("category"),
+                data.get("subcategory"),
                 sha256_hash,
                 version,
                 data.get("file_path"),
@@ -236,14 +243,14 @@ def insert_document(
             ),
         )
         conn.commit()
-        new_id = cursor.lastrowid
+        new_id = data.get("id")
 
     return get_document_by_id(db_path, new_id)
 
 
 def update_document_file_info(
     db_path: str,
-    document_id: int,
+    document_id: str,
     fields: dict,
 ) -> Optional[StoredDocument]:
     """
@@ -275,7 +282,7 @@ def update_document_file_info(
     return get_document_by_id(db_path, document_id)
 
 
-def mark_download_failed(db_path: str, document_id: int) -> None:
+def mark_download_failed(db_path: str, document_id: str) -> None:
     """Mark a document record as failed to download."""
     with _get_connection(db_path) as conn:
         conn.execute(
@@ -289,7 +296,7 @@ def mark_download_failed(db_path: str, document_id: int) -> None:
 # Read operations
 # ---------------------------------------------------------------------------
 
-def get_document_by_id(db_path: str, document_id: int) -> Optional[StoredDocument]:
+def get_document_by_id(db_path: str, document_id: str) -> Optional[StoredDocument]:
     """Fetch a single document by its primary key."""
     with _get_connection(db_path) as conn:
         row = conn.execute(
@@ -335,6 +342,8 @@ def search_by_metadata(
     document_number: Optional[str] = None,
     year: Optional[str] = None,
     language: Optional[str] = None,
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
     download_status: Optional[str] = None,
     latest_only: bool = True,
 ) -> list[StoredDocument]:
@@ -366,6 +375,12 @@ def search_by_metadata(
     if language:
         conditions.append("language = ?")
         params.append(language)
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+    if subcategory:
+        conditions.append("subcategory = ?")
+        params.append(subcategory)
     if download_status:
         conditions.append("download_status = ?")
         params.append(download_status)
@@ -406,8 +421,9 @@ def insert_documents_batch(db_path: str, docs: list[StoredDocument]) -> BatchSto
     # Prepare the data for high-speed insertion
     payload = [
         (
-            d.file_url, d.title, d.document_type, d.issuing_entity,
+            d.id, d.file_url, d.title, d.document_type, d.issuing_entity,
             d.document_number, d.year, d.date, d.language,
+            d.category, d.subcategory,
             d.sha256_hash, d.version, 1, # Mark as latest version
             d.file_path, d.file_size_bytes, d.download_status, now
         ) for d in docs
@@ -417,11 +433,12 @@ def insert_documents_batch(db_path: str, docs: list[StoredDocument]) -> BatchSto
         with _get_connection(db_path) as conn:
             cursor = conn.executemany("""
                 INSERT INTO documents (
-                    file_url, title, document_type, issuing_entity,
+                    id, file_url, title, document_type, issuing_entity,
                     document_number, year, date, language,
+                    category, subcategory,
                     sha256_hash, version, is_last,
                     file_path, file_size_bytes, download_status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, payload)
             conn.commit()
             inserted_count = cursor.rowcount
@@ -455,7 +472,7 @@ def get_pending_ocr_documents(db_path: str) -> list[StoredDocument]:
     return [_row_to_document(r) for r in rows]
 
 
-def update_ocr_status(db_path: str, document_id: int, status: str) -> None:
+def update_ocr_status(db_path: str, document_id: str, status: str) -> None:
     """
     Update the OCR status of a document (e.g., to 'processing', 'completed', or 'failed').
     """
@@ -481,7 +498,7 @@ def insert_document_chunks_batch(db_path: str, chunks: list[dict[str, Any]]) -> 
     if not chunks:
         return False
 
-    doc_id: int = chunks[0]['doc_id']
+    doc_id: str = chunks[0]['doc_id']
     now: str = datetime.now(timezone.utc).isoformat()
     
     # Map dictionary keys to database columns
@@ -516,4 +533,38 @@ def insert_document_chunks_batch(db_path: str, chunks: list[dict[str, Any]]) -> 
             return True
     except sqlite3.Error as e:
         print(f"[-] Database error during chunk storage: {e}")
-        return False
+        return False    
+
+
+def get_documents_by_custom_filter(
+    db_path: str,
+    category: str,
+    subcategory: Optional[str] = None,
+    title: Optional[str] = None,
+    is_last: Optional[bool] = None,
+) -> list[StoredDocument]:
+    """
+    Query documents by category with optional subcategory, title, and is_last filters.
+    """
+    conditions = ["category = ?"]
+    params = [category]
+
+    if subcategory:
+        conditions.append("subcategory = ?")
+        params.append(subcategory)
+    if title:
+        conditions.append("title LIKE ?")
+        params.append(f"%{title}%")
+    if is_last is not None:
+        conditions.append("is_last = ?")
+        params.append(1 if is_last else 0)
+
+    where_clause = "WHERE " + " AND ".join(conditions)
+    query = f"SELECT * FROM documents {where_clause} ORDER BY created_at DESC"
+
+    with _get_connection(db_path) as conn:
+        rows = conn.execute(query, params).fetchall()
+    
+    return [_row_to_document(row) for row in rows]
+
+
