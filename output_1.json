@@ -89,6 +89,18 @@
             "date": null,
             "language": "English",
             "file_url": "https://www.cbe.org.eg/-/media/project/cbe/page-content/rich-text/laws-and-regulations/laws/ar/new-presidential-decree-no-678-for-2019-relating-to-the-formation-of--the-board-of-director.pdf"
+        },
+        {
+            "title": "Local QA Policy Document",
+            "document_type": "INTERNAL_POLICY",
+            "issuing_entity": "Compliance Department",
+            "document_number": "001",
+            "year": "2026",
+            "date": null,
+            "language": "Arabic",
+            "file_url": "https://internal.company.local/dummy_link_for_pipeline_validation.pdf",
+            "local_path": "data/local_files",
+            "pdf_name": "test.pdf"
         }
     ]
 ]

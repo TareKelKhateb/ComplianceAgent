@@ -1542,4 +1542,159 @@ class ParsingMetaDataExtractor:
     def reset_metadate(self):
         self.metadata_store.reset_all_data()
 
-    
+    # ------------------------------------------------------------------------------------------------------
+    # ## General Pipeline For Local Files & Remote URLs
+    # ------------------------------------------------------------------------------------------------------
+
+    def process_pipeline_general(
+        self,
+        target_url: str = "",
+        is_crawl: bool = False,
+        limit: int = 1,
+        save_directory: Optional[str] = None,
+        scraped_data: Optional[list] = None,
+        push_to_dagshub: bool = True,
+    ) -> dict:
+        """
+        Generalized end-to-end ingestion pipeline supporting both 
+        remote downloads and pre-existing local files.
+        """
+        save_dir = save_directory or self.temp_download_dir
+        stats = {"new": 0, "updated": 0, "skipped": 0, "failed": 0,
+                 "pushed": 0, "push_failed": 0}
+
+        # --- Step 1: Obtain raw data ---
+        if scraped_data is not None:
+            self.logger.info("📂 Using pre-loaded data (%d items).", len(scraped_data))
+            raw_data = scraped_data
+        else:
+            if not target_url:
+                self.logger.error("❌ No target_url and no scraped_data. Halted.")
+                return stats
+            raw_data = self.fetch_incoming_data(url=target_url, is_crawl=is_crawl, limit=limit)
+
+        if not raw_data:
+            self.logger.warning("🚫 No data available. Pipeline halted.")
+            return stats
+
+        # --- Step 2: Normalise ---
+        document_groups = raw_data if raw_data and isinstance(raw_data[0], list) else [raw_data]
+        total_docs = sum(len(g) for g in document_groups)
+        self.logger.info("📋 Processing %d document(s) across %d group(s).", total_docs, len(document_groups))
+
+        # --- Step 3: Process documents ---
+        for group_idx, document_group in enumerate(document_groups, start=1):
+            for doc_dict in document_group:
+                title = doc_dict.get("title", "Unknown Title")
+                file_url = doc_dict.get("file_url")
+                
+                # New keys for local processing
+                local_path = doc_dict.get("local_path")
+                pdf_name = doc_dict.get("pdf_name")
+
+                self.logger.info("📄 Processing: %s", title)
+
+                try:
+                    if not file_url:
+                        self.logger.warning("⚠️ [SKIP] No file_url found for '%s'.", title)
+                        stats["skipped"] += 1
+                        continue
+
+                    pdf_bytes = None
+                    final_file_path = ""
+
+                    # ---- Step 3a: Check Local Path First --------------------
+                    if local_path and pdf_name:
+                        potential_path = os.path.join(local_path, pdf_name)
+                        print(f"DEBUG: I am looking for the file exactly here: {os.path.abspath(potential_path)}") 
+                        if os.path.exists(potential_path):
+                            self.logger.info("🏠 [LOCAL] File found at %s. Skipping download.", potential_path)
+                            try:
+                                with open(potential_path, "rb") as f:
+                                    pdf_bytes = f.read()
+                                final_file_path = potential_path
+                            except Exception as e:
+                                self.logger.error("❌ [FAIL] Could not read local file %s: %s", potential_path, e)
+
+                    # ---- Step 3b: Fallback to Download ----------------------
+                    if not pdf_bytes:
+                        safe_name = title.replace(" ", "_").replace("/", "-").replace("\\", "-")
+                        if not safe_name.endswith(".pdf"):
+                            safe_name += ".pdf"
+                            
+                        pdf_bytes = self.download_pdf(
+                            file_url=file_url,
+                            file_name=safe_name,
+                            save_directory=save_dir,
+                        )
+                        final_file_path = os.path.join(save_dir, safe_name)
+
+                    if not pdf_bytes:
+                        self.logger.error("❌ [FAIL] Source acquisition failed for '%s'. Skipping.", title)
+                        stats["failed"] += 1
+                        continue
+
+                    # ---- Step 3c: Hash -------------------------------------
+                    new_hash = self.calculate_hash(file_content=pdf_bytes)
+                    if not new_hash:
+                        stats["failed"] += 1
+                        continue
+
+                    # Build Payload
+                    insert_payload = {
+                        "file_url": file_url,
+                        "sha256_hash": new_hash,
+                        "is_last": True,
+                        "title": title,
+                        "document_type": doc_dict.get("document_type"),
+                        "issuing_entity": doc_dict.get("issuing_entity"),
+                        "document_number": doc_dict.get("document_number"),
+                        "year": doc_dict.get("year"),
+                        "date": doc_dict.get("date"),
+                        "language": doc_dict.get("language"),
+                        "file_path": final_file_path,
+                        "file_size_bytes": len(pdf_bytes),
+                        "download_status": "downloaded",
+                    }
+
+                    # ---- Step 3d: DB existence & Versioning ----------------
+                    exist_result = self.does_document_exist(file_url=file_url)
+                    if not exist_result.success:
+                        stats["failed"] += 1
+                        continue
+
+                    if bool(exist_result.data):
+                        self.logger.info("🗃️ Record found. Checking hash...")
+                        meta_result = self.fetch_existing_metadata(file_url=file_url)
+                        
+                        if not meta_result.success or meta_result.data is None:
+                            stats["failed"] += 1
+                            continue
+
+                        stored_doc = meta_result.data
+                        if self.has_file_changed(new_hash, stored_doc.sha256_hash):
+                            self.logger.info("⬆️ [UPDATE] Content changed.")
+                            self.update_old_version(pdf_url=file_url, fields={"is_last": False})
+                            store_result = self.store_new_version(insert_payload)
+                            if store_result.success:
+                                stats["updated"] += 1
+                                if push_to_dagshub:
+                                    pushed = self.push_to_dagshub(final_file_path, file_url, new_hash)
+                                    stats["pushed" if pushed else "push_failed"] += 1
+                        else:
+                            self.logger.info("🔄 [SKIP] Up-to-date: '%s'", title)
+                            stats["skipped"] += 1
+                    else:
+                        self.logger.info("➕ [NEW] Inserting version 1...")
+                        store_result = self.store_new_version(insert_payload)
+                        if store_result.success:
+                            stats["new"] += 1
+                            if push_to_dagshub:
+                                pushed = self.push_to_dagshub(final_file_path, file_url, new_hash)
+                                stats["pushed" if pushed else "push_failed"] += 1
+
+                except Exception as exc:
+                    self.logger.exception("💥 [UNHANDLED] Error processing '%s': %s", title, exc)
+                    stats["failed"] += 1
+
+        return stats

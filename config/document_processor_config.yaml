@@ -16,8 +16,8 @@ processing_pipeline:
   # --- EasyOCR Extractor Settings ---
   easyocr:
     languages: ["ar", "en"]
-    gpu: False
-    poppler_path: "C:\\Program Files\\Release-26.02.0-0\\poppler-26.02.0\\Library\\bin"
+    gpu: true
+    poppler_path: null  # Linux: Poppler is in system PATH. Windows: set full path e.g. "C:\\poppler\\bin"
     dpi: 300
 
   # --- Overlapping Chunker Settings ---
