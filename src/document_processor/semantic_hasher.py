@@ -1,6 +1,7 @@
 import hashlib
 import re
 from typing import List, Dict, Any
+from .chunk_id_generator import LegalArticleParser
 
 class SemanticHasher:
     """
@@ -9,32 +10,44 @@ class SemanticHasher:
     """
 
     def __init__(self) -> None:
-        pass
+
+        self.article_parser: LegalArticleParser = LegalArticleParser()
 
     def process_layer_two(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Refines chunks by normalizing content and regenerating hashes before Diff Analysis.
-        """
-        print(f"[*] Layer 2: Normalizing {len(chunks)} chunks...")
-        
-        for chunk in chunks:
-            # 1. Identity Check (Table vs Text)
-            # Ensure 'type' was saved in Layer 1
-            is_table: bool = chunk.get('type') == 'table'
-            
-            # 2. Normalize Content (The Arabic Logic)
-            raw_content = chunk.get('content', '')
-            normalized_content = self._normalize_text(raw_content, is_table=is_table)
-            
-            # 3. Update Chunk
-            chunk['content'] = normalized_content
-            
-            # 4. Regenerate Hash based on Normalized text
-            # This is critical! The DiffEngine will use this hash.
-            chunk['chunk_hash'] = self._generate_hash(normalized_content)
+            """
+            Refines a batch of raw chunks by normalizing text, extracting Arabic legal article 
+            numbers to build deterministic IDs, and calculating robust SHA-256 hashes.
 
-        print("[+] Layer 2 Complete: Hashes are now semantically consistent.")
-        return chunks
+            Args:
+                chunks (List[Dict[str, Any]]): The list of raw chunk dictionaries from Layer 1.
+
+            Returns:
+                List[Dict[str, Any]]: The mutation-safe, enriched chunks ready for Diff Analysis.
+            """
+            print(f"[*] Layer 2: Normalizing and assigning IDs to {len(chunks)} chunks...")
+            
+            # 3. REPLACE YOUR ENTIRE process_layer_two LOOP WITH THIS
+            for chunk in chunks:
+                # Identity Check (Table vs Text)
+                is_table: bool = chunk.get('type') == 'table'
+                
+                # Extract and normalize text to strip orthographic noise
+                raw_content: str = chunk.get('content', '')
+                normalized_content: str = self._normalize_text(raw_content, is_table=is_table)
+                chunk['content'] = normalized_content
+                
+                # Extract the legal article number ("45", "12", or "0" if not detected)
+                article_num: str = self.article_parser.extract_article_id(normalized_content)
+                    
+                # Mapping the strategic legal ID (Only doc_id and article_num, no index)
+                doc_id: str = chunk.get('doc_id', 'unknown_doc')
+                chunk['chunk_id'] = f"{doc_id}_art_{article_num}"
+                
+                # Regenerate Hash based on the pristine Normalized text
+                chunk['chunk_hash'] = self._generate_hash(normalized_content)
+
+            print("[+] Layer 2 Complete: Hashes and Clean Legal IDs are now consistent.")
+            return chunks       
 
     def _normalize_text(self, text: str, is_table: bool = False) -> str:
         if not text: return ""

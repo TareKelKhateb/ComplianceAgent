@@ -116,6 +116,7 @@ def init_db(db_path: str) -> None:
             CREATE TABLE IF NOT EXISTS document_chunks (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
                 doc_id           TEXT NOT NULL,
+                chunk_id         TEXT,     -- New deterministic ID field
                 chunk_index      INTEGER NOT NULL,
                 content          TEXT    NOT NULL,
                 bbox             TEXT,
@@ -129,6 +130,12 @@ def init_db(db_path: str) -> None:
                 FOREIGN KEY (doc_id) REFERENCES documents (id) ON DELETE CASCADE
             )
         """)
+
+        # Add chunk_id column to existing tables (Schema Evolution)
+        try:
+            conn.execute("ALTER TABLE document_chunks ADD COLUMN chunk_id TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # 4. Create performance indices for faster queries
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ocr_status ON documents (ocr_status)")
@@ -505,6 +512,7 @@ def insert_document_chunks_batch(db_path: str, chunks: list[dict[str, Any]]) -> 
     payload = [
         (
             c['doc_id'], 
+            c.get('chunk_id'), # New deterministic ID
             c['chunk_index'], 
             c['content'], 
             str(c.get('bbox', '')), # Ensure bbox is a string
@@ -518,8 +526,8 @@ def insert_document_chunks_batch(db_path: str, chunks: list[dict[str, Any]]) -> 
             # 1. Insert all chunks in one batch
             conn.executemany("""
                 INSERT INTO document_chunks (
-                    doc_id, chunk_index, content, bbox, page_number, chunk_hash
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    doc_id, chunk_id, chunk_index, content, bbox, page_number, chunk_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """, payload)
 
             # 2. Update parent record to 'completed' and set the timestamp

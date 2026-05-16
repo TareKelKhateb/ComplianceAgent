@@ -497,11 +497,10 @@ class MetadataStore:
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM document_chunks")
                 conn.execute("DELETE FROM documents")
-                # Reset the AUTOINCREMENT counter so IDs restart from 1
-                conn.execute(
-                    "DELETE FROM sqlite_sequence WHERE name = 'documents'"
-                )
+                # Reset the AUTOINCREMENT counter
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('documents', 'document_chunks')")
                 conn.commit()
             return StorageResult(
                 success=True,
@@ -1295,16 +1294,17 @@ class MetadataStore:
                 # Updated Query to include Diff Results
                 query = """
                     INSERT INTO document_chunks (
-                        doc_id, chunk_index, content, bbox, 
+                        doc_id, chunk_id, chunk_index, content, bbox, 
                         page_number, chunk_hash, is_active, version, 
                         created_at, change_type, old_content
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 
                 try:
                     data_to_insert = [
                         (
                             c.get('doc_id'), 
+                            c.get('chunk_id'), # New deterministic ID
                             c.get('chunk_index'), 
                             c.get('content'), 
                             c.get('bbox'), 
@@ -1337,7 +1337,7 @@ class MetadataStore:
         Useful for auditing or restoring old data.
         """
         query = """
-            SELECT chunk_index, content, bbox, page_number, chunk_hash, 
+            SELECT chunk_id, chunk_index, content, bbox, page_number, chunk_hash, 
                    is_active, version, created_at, change_type, old_content
             FROM document_chunks 
             WHERE doc_id = ? AND version = ?
@@ -1358,7 +1358,7 @@ class MetadataStore:
         This is used in the OCR Pipeline to provide a base for comparison (Diff).
         """
         query = """
-            SELECT chunk_index, content, bbox, page_number, chunk_hash, 
+            SELECT chunk_id, chunk_index, content, bbox, page_number, chunk_hash, 
                    is_active, version, created_at
             FROM document_chunks 
             WHERE doc_id = ? AND is_active = 1
@@ -1381,7 +1381,7 @@ class MetadataStore:
         Used for standard RAG/Question-Answering.
         """
         query = """
-            SELECT chunk_index, content, page_number, chunk_hash
+            SELECT chunk_id, chunk_index, content, page_number, chunk_hash
             FROM document_chunks 
             WHERE doc_id = ? AND is_active = 1
             ORDER BY chunk_index ASC

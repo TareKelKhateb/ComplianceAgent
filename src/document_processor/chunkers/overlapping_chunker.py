@@ -36,13 +36,13 @@ class OverlappingChunker(BaseChunker):
     # BaseChunker contract
     # ------------------------------------------------------------------
 
-    def create_chunks(self, full_text: str, doc_id: int) -> List[Dict[str, Any]]:
+    def create_chunks(self, full_text: str, doc_id: str) -> List[Dict[str, Any]]:
         """
         Split *full_text* into overlapping windows.
 
         Args:
             full_text (str): The complete Markdown string from the extractor.
-            doc_id (int):    Parent document identifier.
+            doc_id (str):    Parent document identifier.
 
         Returns:
             List[Dict[str, Any]]: Chunk dicts with keys

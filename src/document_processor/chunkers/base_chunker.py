@@ -12,18 +12,18 @@ class BaseChunker(ABC):
     """
 
     @abstractmethod
-    def create_chunks(self, full_text: str, doc_id: int) -> List[Dict[str, Any]]:
+    def create_chunks(self, full_text: str, doc_id: str) -> List[Dict[str, Any]]:
         """
         Split a full Markdown document into a list of structured chunk dicts.
 
         Args:
             full_text (str): The complete Markdown string from the extractor.
-            doc_id (int):    The database ID of the parent document, embedded in
+            doc_id (str):    The database ID of the parent document, embedded in
                              every returned chunk for traceability.
 
         Returns:
             List[Dict[str, Any]]: Each dict must contain at minimum:
-                - ``doc_id``      (int)  – parent document identifier
+                - ``doc_id``      (str)  – parent document identifier
                 - ``chunk_index`` (int)  – zero-based position within this version
                 - ``content``     (str)  – the chunk's textual content
                 - ``metadata``    (dict) – arbitrary strategy-specific metadata
