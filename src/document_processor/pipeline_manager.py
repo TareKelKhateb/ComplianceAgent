@@ -13,7 +13,6 @@ from .chunkers.overlapping_chunker import OverlappingChunker
 from .chunkers.semantic_chunker import SemanticChunker
 from .semantic_hasher import SemanticHasher
 from .diff_engine import DiffEngine
-
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
@@ -130,7 +129,7 @@ class OCRPipeline:
         self._save_full_text: bool = self._cfg.get("save_full_text", True)
         self._full_text_dir: str = self._cfg.get("full_text_output_dir", "output_markdown")
 
-    def run(self, pdf_path: str, doc_id: int) -> bool:
+    def run(self, pdf_path: str, doc_id: str) -> bool:
         """
         Execute the full processing pipeline for one document version.
         """
@@ -169,7 +168,7 @@ class OCRPipeline:
     # Private Implementation Methods
     # ------------------------------------------------------------------
 
-    def _prepare_pipeline_session(self, doc_id: int):
+    def _prepare_pipeline_session(self, doc_id: str):
         """Initializes the processing session by fetching metadata."""
         self.store.update_ocr_status(doc_id, "processing")
         base_chunks = self.store.get_latest_chunks(doc_id)
@@ -177,7 +176,7 @@ class OCRPipeline:
         created_at = datetime.now().isoformat()
         return base_chunks, next_ver, created_at
 
-    def _execute_extraction_layer(self, pdf_path: str, doc_id: int) -> Optional[str]:
+    def _execute_extraction_layer(self, pdf_path: str, doc_id: str) -> Optional[str]:
         """Handles Layer 1: PDF Extraction."""
         print(f"[*] Layer 1: Extracting text using {type(self.extractor).__name__}...")
         full_text: str = self.extractor.extract_text(pdf_path)
@@ -192,7 +191,7 @@ class OCRPipeline:
             
         return full_text
 
-    def _execute_chunking_layer(self, full_text: str, doc_id: int) -> Optional[List[Dict[str, Any]]]:
+    def _execute_chunking_layer(self, full_text: str, doc_id: str) -> Optional[List[Dict[str, Any]]]:
         """Splits text into chunks."""
         print(f"[*] Chunking: Using {type(self.chunker).__name__}...")
         raw_chunks = self.chunker.create_chunks(full_text, doc_id)
@@ -209,7 +208,6 @@ class OCRPipeline:
         refined_chunks = self.hasher.process_layer_two(raw_chunks)
         for chunk in refined_chunks:
             chunk.update({
-                "version": next_ver,
                 "created_at": created_at,
                 "is_active": 1
             })
@@ -221,28 +219,62 @@ class OCRPipeline:
             print("[*] Initial upload detected. Marking all as 'added'.")
             for chunk in refined_chunks:
                 chunk["change_type"] = "added"
+                chunk["version"] = 1
             return refined_chunks
 
         print(f"[*] Layer 3: Comparing with {len(base_chunks)} previous chunks…")
         return self.diff_engine.compare_documents(base_chunks, refined_chunks)
 
-    def _finalize_pipeline_results(self, doc_id: int, final_chunks: List[Dict[str, Any]], base_chunks: List[Dict[str, Any]]) -> bool:
-        """Saves data to DB and updates status."""
+    def _finalize_pipeline_results(self, doc_id: str, final_chunks: List[Dict[str, Any]], base_chunks: List[Dict[str, Any]]) -> bool:
+        """Saves data to DB and updates status using an incremental strategy."""
         print(f"[*] Synchronizing DB for Doc ID {doc_id}…")
-        self.store.archive_old_chunks(doc_id)
-        save_result = self.store.save_chunks(final_chunks)
+        
+        # 1. Separate chunks into those that need saving and those that are unchanged
+        to_save = [c for c in final_chunks if c.get('change_type') != 'unchanged']
+        unchanged_ids = {c['chunk_id'] for c in final_chunks if c.get('change_type') == 'unchanged'}
+        
+        # 2. Archive everything that ISN'T in the unchanged set
+        # We'll use a new method or a clever query. 
+        # For now, let's just archive the modified/deleted ones explicitly.
+        try:
+            # Archive all current active chunks for this doc EXCEPT the ones we identified as unchanged
+            # This keeps Article 2 'is_active=1' without a new row.
+            with self.store._get_connection() as conn:
+                # We need to archive chunks that were modified (they are in to_save) 
+                # and chunks that were deleted (they are in base_chunks but not in final_chunks)
+                for chunk in to_save:
+                    # Archive previous version of this specific chunk_id if it exists
+                    conn.execute(
+                        "UPDATE document_chunks SET is_active = 0 WHERE doc_id = ? AND chunk_id = ? AND is_active = 1",
+                        (doc_id, chunk['chunk_id'])
+                    )
+                
+                # Also handle deletions: anything in base_chunks not in final_chunks
+                final_ids = {c['chunk_id'] for c in final_chunks}
+                for b_chunk in base_chunks:
+                    if b_chunk['chunk_id'] not in final_ids:
+                        conn.execute(
+                            "UPDATE document_chunks SET is_active = 0 WHERE doc_id = ? AND chunk_id = ? AND is_active = 1",
+                            (doc_id, b_chunk['chunk_id'])
+                        )
+                conn.commit()
+        except Exception as e:
+            print(f"[!] Archiving error: {e}")
+
+        # 3. Save only the new/modified chunks
+        save_result = self.store.save_chunks(to_save)
 
         if save_result.success:
             self.store.update_ocr_status(doc_id, "completed")
             score = self.diff_engine.get_similarity_score(base_chunks, final_chunks)
-            print(f"[+] Pipeline complete — {len(final_chunks)} chunks saved | Similarity: {score}%")
+            print(f"[+] Pipeline complete — {len(to_save)} new/modified chunks saved | Similarity: {score}%")
             return True
         else:
             print(f"[!] Storage failed: {save_result.message}")
             self.store.update_ocr_status(doc_id, "failed")
             return False
 
-    def _handle_pipeline_failure(self, doc_id: int, exc: Exception):
+    def _handle_pipeline_failure(self, doc_id: str, exc: Exception):
         """Logs errors and updates DB status."""
         print(f"[!] Pipeline error for Doc ID {doc_id}: {exc}")
         self.store.update_ocr_status(doc_id, "failed")

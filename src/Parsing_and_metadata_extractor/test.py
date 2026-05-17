@@ -19,6 +19,7 @@ import json
 import logging
 import sys
 
+# pyrefly: ignore [missing-import]
 from src.Parsing_and_metadata_extractor.parsing_and_metadata_extractor import (
     ParsingMetaDataExtractor,
 )
@@ -52,14 +53,14 @@ def _print_banner(text: str, char: str = "═", width: int = 64) -> None:
 def _print_stats(stats: dict, total: int) -> None:
     _print_banner("PIPELINE RUN SUMMARY")
     print(f"  {'Total processed':<28} {total}")
-    print(f"  {'✅  New inserts':<28} {stats.get('new', 0)}")
-    print(f"  {'⬆️   Updated versions':<28} {stats.get('updated', 0)}")
-    print(f"  {'🔄  Skipped (unchanged)':<28} {stats.get('skipped', 0)}")
-    print(f"  {'❌  Failed':<28} {stats.get('failed', 0)}")
+    print(f"  {'[NEW] New inserts':<28} {stats.get('new', 0)}")
+    print(f"  {'[UPD] Updated versions':<28} {stats.get('updated', 0)}")
+    print(f"  {'[SKP] Skipped (unchanged)':<28} {stats.get('skipped', 0)}")
+    print(f"  {'[ERR] Failed':<28} {stats.get('failed', 0)}")
     if stats.get("pushed", 0) or stats.get("push_failed", 0):
         print()
-        print(f"  {'☁️   Pushed to DagsHub':<28} {stats.get('pushed', 0)}")
-        print(f"  {'⚠️   DagsHub push failed':<28} {stats.get('push_failed', 0)}")
+        print(f"  {'[HUB] Pushed to DagsHub':<28} {stats.get('pushed', 0)}")
+        print(f"  {'[WRN] DagsHub push failed':<28} {stats.get('push_failed', 0)}")
     print("═" * 64 + "\n")
 
 
@@ -68,18 +69,18 @@ def _print_stats(stats: dict, total: int) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    _print_banner("🚀  Compliance Agent — Metadata Ingestion Pipeline")
+    _print_banner("Compliance Agent - Metadata Ingestion Pipeline")
 
     # 1. Load JSON -----------------------------------------------------------
     try:
         with open(JSON_INPUT_FILE, "r", encoding="utf-8") as fh:
             scraped_data = json.load(fh)
-        logger.info("📂  Loaded '%s' successfully.", JSON_INPUT_FILE)
+        logger.info("Loaded '%s' successfully.", JSON_INPUT_FILE)
     except FileNotFoundError:
-        logger.critical("❌  Input file not found: '%s'. Aborting.", JSON_INPUT_FILE)
+        logger.critical("Input file not found: '%s'. Aborting.", JSON_INPUT_FILE)
         sys.exit(1)
     except json.JSONDecodeError as exc:
-        logger.critical("❌  Failed to parse JSON: %s", exc)
+        logger.critical("Failed to parse JSON: %s", exc)
         sys.exit(1)
 
     # Count total documents for the summary (works for flat & nested layouts).
@@ -92,12 +93,12 @@ if __name__ == "__main__":
     parser = ParsingMetaDataExtractor()
 
 
-    _print_banner("📊  Current Database State (before pipeline run)")
+    _print_banner("Current Database State (before pipeline run)")
     parser.print_database_stats()
     parser.print_all_documents()
 
     # 3. Run the pipeline (with DagsHub push enabled) -----------------------
-    _print_banner("⚙️   Running Ingestion Pipeline")
+    _print_banner("Running Ingestion Pipeline")
     stats = parser.process_pipeline_general(
         scraped_data=scraped_data,
         push_to_dagshub=True,   # set False to skip DVC push (dry-run)

@@ -1,7 +1,7 @@
 import logging
 import re
 import unicodedata
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -18,7 +18,7 @@ class ChunkMetadata(BaseModel):
 
     type: str  # 'preamble' | 'article'
     header: Optional[str] = None
-    article_number: Optional[int] = None
+    article_number: Optional[Union[int, str]] = None
     word_count: int = 0
     language: str = "en"
 
@@ -26,7 +26,7 @@ class ChunkMetadata(BaseModel):
 class Chunk(BaseModel):
     """A single document chunk produced by the SemanticChunker."""
 
-    doc_id: int
+    doc_id: Union[int, str]
     chunk_index: int
     content: str
     metadata: ChunkMetadata
@@ -124,7 +124,7 @@ class SemanticChunker(BaseChunker):
     # BaseChunker contract
     # ------------------------------------------------------------------
 
-    def create_chunks(self, full_text: str, doc_id: int) -> List[dict]:
+    def create_chunks(self, full_text: str, doc_id: str) -> List[dict]:
         """
         Split *full_text* on article headers.
 
@@ -147,12 +147,12 @@ class SemanticChunker(BaseChunker):
                 "full_text must be a non-empty string, "
                 f"got {type(full_text).__name__!r}: {full_text!r}"
             )
-        if not isinstance(doc_id, int) or doc_id <= 0:
+        if not isinstance(doc_id, (int, str)):
             raise ValueError(
-                f"doc_id must be a positive integer, got {doc_id!r}"
+                f"doc_id must be an integer or string, got {type(doc_id).__name__!r}: {doc_id!r}"
             )
 
-        logger.debug("SemanticChunker: Splitting doc_id=%d on article headers…", doc_id)
+        logger.debug("SemanticChunker: Splitting doc_id=%s on article headers…", doc_id)
 
         # ------------------------------------------------------------------
         # 2. Page-separator cleanup (hardened regex from config)
