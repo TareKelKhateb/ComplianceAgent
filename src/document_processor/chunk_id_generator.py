@@ -7,9 +7,9 @@ class LegalArticleParser:
     from Arabic legal text chunks for Financial Crime Compliance (FCC) documents.
     
     It supports:
-    1. Exact digits (e.g., 'مادة 45', 'الماده (12) مكرر')
-    2. Textual Arabic numbers (e.g., 'الماده الخامسه والعشرون')
-    3. Multi-pass prefix stripping (ال/و/ف)
+    1. Exact digits (e.g., 'مادة 45', 'الماده (12) مكرر', '#### ماده (٦) :')
+    2. Textual Arabic numbers even inside brackets (e.g., '#### (الماده الاولي) تسري')
+    3. Multi-pass prefix stripping (ال/و/ف/ب)
     4. Suffix detection (مكرر/ثانيا/ثالثا)
     """
 
@@ -21,7 +21,7 @@ class LegalArticleParser:
         self._units: dict[str, int] = {
             "واحد": 1, "واحده": 1, "اول": 1, "اولي": 1,
             "اثنان": 2, "اثنين": 2, "اثنا": 2, "اثني": 2, "ثاني": 2, "ثانيه": 2,
-            "ثلاثه": 3, "ثلاث": 3, "ثالث": 3, "ثالثه": 3,
+            "ثلاثه": 3, "ثلاث": 3, "ثالع": 3, "ثالث": 3, "ثالم": 3, "ثالثه": 3, # بدائل متوقعة من عيوب الـ OCR
             "اربعه": 4, "اربع": 4, "رابع": 4, "رابعه": 4,
             "خمسه": 5, "خمس": 5, "خامس": 5, "خامسه": 5,
             "سته": 6, "ست": 6, "سادس": 6, "سادسه": 6,
@@ -53,16 +53,15 @@ class LegalArticleParser:
             "مكرر": "bis", "ثانيا": "2", "ثالثا": "3", "رابعا": "4"
         }
 
-        # Optimized Patterns for Mistral Markdown & EasyOCR
-        # Pattern 1: Numerical digits with optional Markdown (###, **) and suffixes
+
         self._numeric_pattern: re.Pattern = re.compile(
-            r"^(?:#{1,6}\s*|\*\*\s*|[\(\（]\s*)?(?:الماد[هة]|ماد[هة])\s*\(?(\d+)\)?(?:\s+(مكرر|ثانيا|ثالثا|رابعا))?(?:\s*[\(\（]\s*([أ-ي])\s*[\)\）])?", 
-            re.IGNORECASE
-        )
+                    r"(?:الماد[هة]|ماد[هة])\s*[\(\（]?\s*([0-9\u0660-\u0669]+)", 
+                    re.IGNORECASE
+                )
         
-        # Pattern 2: Textual words with optional Markdown formatting
+        # Pattern 2: لقط الأرقام اللفظية (الماده الاولي أو (الماده الثانيه) أو حتى ا ل م ا د ه)
         self._textual_pattern: re.Pattern = re.compile(
-            r"^(?:#{1,6}\s*|\*\*\s*|[\(\（]\s*)?(?:الماد[هة]|ماد[هة])\s+([واإأآةهبينملاقثصعخحجدشسيفَُِّْ\s]+)", 
+            r"(?:الماد[هة]|ماد[هة])\s*[\(\（]?\s*([أ-ي]+)(?:\s*[\)\)]?\s*([أ-ي]+))?", 
             re.IGNORECASE
         )
 
@@ -96,7 +95,6 @@ class LegalArticleParser:
         suffix: Optional[str] = None
         
         for raw_token in text_tokens:
-            # Check for suffixes first (not stripped of 'ال' etc. usually, but normalized)
             norm_token = self._normalize_token(raw_token)
             
             if norm_token in self._suffixes:
@@ -134,35 +132,62 @@ class LegalArticleParser:
             
         sample_text: str = chunk_content[:200].strip()
         
-        # Strategy 1: Check for standard digits (e.g., مادة 75 مكرر)
+        print(f"\n[DEBUG] Input text into parser: {repr(sample_text[:100])}")
+        
+        # Strategy 1: Check for standard or eastern digits (e.g., ماده (١) أو بماده (٨٨))
         numeric_match = self._numeric_pattern.search(sample_text)
         if numeric_match:
             base_num = self._normalize_digits(numeric_match.group(1))
-            raw_suffix = numeric_match.group(2)
-            sub_letter = numeric_match.group(3)
             
-            suffix = f"_{self._suffixes[raw_suffix]}" if raw_suffix in self._suffixes else ""
-            sub_str = f"_{sub_letter}" if sub_letter else ""
+            suffix_str = ""
+            for ar_suffix, en_suffix in self._suffixes.items():
+                if ar_suffix in sample_text[:100]:
+                    suffix_str = f"_{en_suffix}"
+                    break
+                    
+            sub_str = ""
+            sub_match = re.search(r"[\(\（]\s*([أ-ي])\s*[\)\）]", sample_text[:100])
+            if sub_match:
+                sub_letter = sub_match.group(1)
+                if sub_letter in ["أ", "ا"]: sub_str = "_a"
+                elif sub_letter == "ب": sub_str = "_b"
+                elif sub_letter == "ج": sub_str = "_c"
+                elif sub_letter == "د": sub_str = "_d"
             
-            # Map Arabic letters to ASCII if possible
-            # Note: Normalized text uses 'ا' for all Alef variants
-            if sub_letter in ["أ", "ا"]: sub_str = "_a"
-            elif sub_letter == "ب": sub_str = "_b"
-            elif sub_letter == "ج": sub_str = "_c"
-            elif sub_letter == "د": sub_str = "_d"
+            print(f"[DEBUG] -> Success Strategy 1: {base_num}{suffix_str}{sub_str}")
+            return f"{base_num}{suffix_str}{sub_str}"
             
-            return f"{base_num}{suffix}{sub_str}"
-            
-        # Strategy 2: Check for written Arabic words
+        # Strategy 2: Check for written Arabic words (e.g., (الماده الاولى) أو الماده الثامنه)
+  # Strategy 2: Check for written Arabic words
         textual_match = self._textual_pattern.search(sample_text)
         if textual_match:
-            raw_words: List[str] = textual_match.group(1).split()
-            # Filter noise
+            word1 = textual_match.group(1) or ""
+            word2 = textual_match.group(2) or ""
+            
+            raw_matched_text = f"{word1} {word2}".strip()
+            print(f"[DEBUG] -> Found Textual Match raw: {repr(raw_matched_text)}")
+            # -------------------------------------
+            
+            test_tokens = raw_matched_text.split()
+            single_char_tokens = [t for t in test_tokens if len(t) == 1]
+            
+            if len(test_tokens) > 0 and (len(single_char_tokens) / len(test_tokens)) > 0.6:
+                condensed = re.sub(r'\s+', '', raw_matched_text)
+                for suffix_word in ["مكرر", "ثانيا", "ثالثا", "رابعا"]:
+                    if suffix_word in condensed:
+                        condensed = condensed.replace(suffix_word, f" {suffix_word}")
+                raw_words = condensed.split()
+                print(f"[DEBUG] -> Condensed Spaced Text to: {raw_words}")
+            else:
+                raw_words = [re.sub(r'[\)\(\]\）\（]', '', w) for w in test_tokens]
+            
             clean_tokens: List[str] = [w for w in raw_words if w not in ["بعد", "من", "في"]]
             
             num, suffix_val = self._words_to_number(clean_tokens)
             if num is not None:
                 suffix_str = f"_{suffix_val}" if suffix_val else ""
+                print(f"[DEBUG] -> Success Strategy 2: {num}{suffix_str}")
                 return f"{num}{suffix_str}"
                 
+        print("[DEBUG] -> Failed to catch any article ID. Returning '0'")
         return "0"

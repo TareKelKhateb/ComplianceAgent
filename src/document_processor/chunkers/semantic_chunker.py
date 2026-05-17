@@ -37,18 +37,30 @@ class Chunk(BaseModel):
 # ---------------------------------------------------------------------------
 
 # Matches "Article 5", "### المادة 12", etc. and extracts the number.
+# _ARTICLE_NUMBER_RE = re.compile(
+#     r"(?:Article|المادة|مادة)\s+(\d+)", re.IGNORECASE
+# )
+# _ARTICLE_NUMBER_RE = re.compile(r"(?:Article|المادة|ماده)\s+([0-9\u0660-\u0669\w]+)", re.IGNORECASE)
+
 _ARTICLE_NUMBER_RE = re.compile(
-    r"(?:Article|المادة|مادة)\s+(\d+)", re.IGNORECASE
+    r"(?:Article|الماد[ةه]|ماد[ةه])\s*\(?\s*([0-9\u0660-\u0669\w]+)\)?", 
+    re.IGNORECASE
 )
+
 
 # Detects Arabic Unicode characters.
 _ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+")
 
 
-def _extract_article_number(header: str) -> Optional[int]:
+def _extract_article_number(header: str) -> Optional[Union[int, str]]:
     """Return the numeric article number from *header*, or ``None``."""
     m = _ARTICLE_NUMBER_RE.search(header)
-    return int(m.group(1)) if m else None
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return m.group(1)
+    return None
 
 
 def _detect_language(header: str) -> str:
