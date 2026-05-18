@@ -1,5 +1,8 @@
 import os
 import yaml
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -128,6 +131,8 @@ class OCRPipeline:
 
         self._save_full_text: bool = self._cfg.get("save_full_text", True)
         self._full_text_dir: str = self._cfg.get("full_text_output_dir", "output_markdown")
+
+        self.task_queue = queue.Queue()
 
     def run(self, pdf_path: str, doc_id: str) -> bool:
         """
@@ -298,22 +303,93 @@ class OCRPipeline:
         return md_path
 
     # ------------------------------------------------------------------
+    # Producer-Consumer Concurrency Methods
+    # ------------------------------------------------------------------
+
+    def _run_extraction_only(self, pdf_path: str, doc_id: str) -> None:
+        """Producer worker: extracts text and places it in the queue."""
+        try:
+            self.store.update_ocr_status(doc_id, "processing")
+            full_text = self._execute_extraction_layer(pdf_path, doc_id)
+            if full_text:
+                self.task_queue.put({
+                    "doc_id": doc_id,
+                    "full_text": full_text
+                })
+        except Exception as exc:
+            self._handle_pipeline_failure(doc_id, exc)
+
+    def _consumer_daemon(self) -> None:
+        """Consumer thread: reads text from the queue and processes DB operations sequentially."""
+        while True:
+            task = self.task_queue.get()
+            if task is None:  # Poison pill to shut down
+                break
+            
+            doc_id = task["doc_id"]
+            full_text = task["full_text"]
+            
+            try:
+                base_chunks, next_ver, created_at = self._prepare_pipeline_session(doc_id)
+                
+                raw_chunks = self._execute_chunking_layer(full_text, doc_id)
+                if not raw_chunks:
+                    continue
+                
+                refined_chunks = self._execute_semantic_layer(raw_chunks, next_ver, created_at)
+                final_chunks = self._execute_diff_layer(base_chunks, refined_chunks)
+                
+                self._finalize_pipeline_results(doc_id, final_chunks, base_chunks)
+            except Exception as exc:
+                self._handle_pipeline_failure(doc_id, exc)
+
+    # ------------------------------------------------------------------
     # Batch processing
     # ------------------------------------------------------------------
 
-    def process_pending_queue(self) -> None:
+    def process_pending_queue(self, max_workers: int = 5) -> None:
         """
-        Fetch all documents with status 'pending' and run sequentially.
+        Fetch all documents with status 'pending' and run them using a Producer-Consumer architecture.
         """
         pending_docs = self.store.get_pending_documents()
         if not pending_docs:
             print("[*] No pending documents found in the queue.")
             return
 
-        print(f"[*] Found {len(pending_docs)} pending document(s). Starting batch…")
-        for doc in pending_docs:
-            doc_id, pdf_path = doc["id"], doc["file_path"]
-            print(f"\n[>] Processing: {pdf_path} (ID: {doc_id})")
-            success = self.run(pdf_path, doc_id)
-            status = "SUCCESS" if success else "FAILED"
-            print(f"[{status}] Document {doc_id} processed.")
+        print(f"[*] Found {len(pending_docs)} pending document(s).")
+        self.run_batch(pending_docs, max_workers=max_workers)
+
+    def run_batch(self, documents: List[Dict[str, Any]], max_workers: int = 5) -> None:
+        """
+        Process a specific list of documents using the Producer-Consumer architecture.
+        OCR is parallelized across workers, while DB insertion is forced to be sequential.
+        
+        Parameters
+        ----------
+        documents : List[Dict[str, Any]]
+            A list of document dictionaries. Each must contain 'id' and 'file_path'.
+        max_workers : int
+            Maximum number of concurrent OCR threads.
+        """
+        if not documents:
+            print("[*] No documents provided for batch processing.")
+            return
+
+        print(f"[*] Starting parallel batch processing for {len(documents)} document(s)…")
+        
+        # 1. Start the Consumer Thread (Daemon)
+        consumer_thread = threading.Thread(target=self._consumer_daemon)
+        consumer_thread.start()
+
+        # 2. Start the Producers (ThreadPoolExecutor for OCR)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for doc in documents:
+                doc_id, pdf_path = doc["id"], doc["file_path"]
+                print(f"\n[>] Queuing for Extraction: {pdf_path} (ID: {doc_id})")
+                executor.submit(self._run_extraction_only, pdf_path, doc_id)
+                
+        # 3. All producers finished. Send poison pill to Consumer and wait for it.
+        self.task_queue.put(None)
+        consumer_thread.join()
+        
+        print("[+] Batch processing completed.")
