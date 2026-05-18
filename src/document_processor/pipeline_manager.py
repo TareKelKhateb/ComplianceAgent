@@ -262,6 +262,12 @@ class OCRPipeline:
             print(f"[!] Archiving error: {e}")
 
         # 3. Save only the new/modified chunks
+        if not to_save:
+            self.store.update_ocr_status(doc_id, "completed")
+            score = self.diff_engine.get_similarity_score(base_chunks, final_chunks)
+            print(f"[+] Pipeline complete — 0 new/modified chunks. No changes detected. | Similarity: {score}%")
+            return True
+
         save_result = self.store.save_chunks(to_save)
 
         if save_result.success:
