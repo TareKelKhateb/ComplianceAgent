@@ -1,6 +1,23 @@
 import re
 from typing import List, Optional
 
+# ---------------------------------------------------------------------------
+# English-article regex (used by LegalArticleParser.extract_article_id)
+# Covers:
+#   "Article 1"          → group(1) = "1"
+#   "Article (4)"        → group(1) = "4"
+#   "(Article 1)"        → group(1) = "1"
+#   "## Article 1 Title" → group(1) = "1"
+# ---------------------------------------------------------------------------
+_EN_ARTICLE_RE: re.Pattern = re.compile(
+    r"\(?\s*Article\s*\(?\s*(\d+)\s*\)?",
+    re.IGNORECASE,
+)
+
+# Detects any Arabic character (used to skip English strategy on Arabic text)
+_HAS_ARABIC_RE: re.Pattern = re.compile(r"[\u0600-\u06FF]")
+
+
 class LegalArticleParser:
     """
     A production-ready parser designed to extract article numbers 
@@ -11,6 +28,7 @@ class LegalArticleParser:
     2. Textual Arabic numbers even inside brackets (e.g., '#### (الماده الاولي) تسري')
     3. Multi-pass prefix stripping (ال/و/ف/ب)
     4. Suffix detection (مكرر/ثانيا/ثالثا)
+    Also supports English patterns: 'Article N', 'Article (N)', '(Article N)'
     """
 
     def __init__(self) -> None:
@@ -126,13 +144,27 @@ class LegalArticleParser:
     def extract_article_id(self, chunk_content: str) -> str:
         """
         Scans the beginning of a chunk to detect an article signature.
+
+        Resolution order:
+          0. English  – "Article N", "Article (N)", "(Article N)"
+          1. Arabic numeric  – مادة (١٢) / مادة 88
+          2. Arabic textual  – الماده الاولي
         """
         if not chunk_content:
             return "0"
-            
+
         sample_text: str = chunk_content[:200].strip()
-        
-        print(f"\n[DEBUG] Input text into parser: {repr(sample_text[:100])}")
+
+        # ------------------------------------------------------------------
+        # Strategy 0: English article number (only when text is in English)
+        # ------------------------------------------------------------------
+        if not _HAS_ARABIC_RE.search(sample_text):
+            en_match = _EN_ARTICLE_RE.search(sample_text)
+            if en_match:
+                return str(int(en_match.group(1)))
+
+        # print(f"\n[DEBUG] Input text into parser: {repr(sample_text[:100])}")
+
         
         # Strategy 1: Check for standard or eastern digits (e.g., ماده (١) أو بماده (٨٨))
         numeric_match = self._numeric_pattern.search(sample_text)
@@ -154,7 +186,7 @@ class LegalArticleParser:
                 elif sub_letter == "ج": sub_str = "_c"
                 elif sub_letter == "د": sub_str = "_d"
             
-            print(f"[DEBUG] -> Success Strategy 1: {base_num}{suffix_str}{sub_str}")
+            # print(f"[DEBUG] -> Success Strategy 1: {base_num}{suffix_str}{sub_str}")
             return f"{base_num}{suffix_str}{sub_str}"
             
         # Strategy 2: Check for written Arabic words (e.g., (الماده الاولى) أو الماده الثامنه)
@@ -165,7 +197,7 @@ class LegalArticleParser:
             word2 = textual_match.group(2) or ""
             
             raw_matched_text = f"{word1} {word2}".strip()
-            print(f"[DEBUG] -> Found Textual Match raw: {repr(raw_matched_text)}")
+            # print(f"[DEBUG] -> Found Textual Match raw: {repr(raw_matched_text)}")
             # -------------------------------------
             
             test_tokens = raw_matched_text.split()
@@ -177,7 +209,7 @@ class LegalArticleParser:
                     if suffix_word in condensed:
                         condensed = condensed.replace(suffix_word, f" {suffix_word}")
                 raw_words = condensed.split()
-                print(f"[DEBUG] -> Condensed Spaced Text to: {raw_words}")
+                # print(f"[DEBUG] -> Condensed Spaced Text to: {raw_words}")
             else:
                 raw_words = [re.sub(r'[\)\(\]\）\（]', '', w) for w in test_tokens]
             
@@ -186,8 +218,8 @@ class LegalArticleParser:
             num, suffix_val = self._words_to_number(clean_tokens)
             if num is not None:
                 suffix_str = f"_{suffix_val}" if suffix_val else ""
-                print(f"[DEBUG] -> Success Strategy 2: {num}{suffix_str}")
+                # print(f"[DEBUG] -> Success Strategy 2: {num}{suffix_str}")
                 return f"{num}{suffix_str}"
                 
-        print("[DEBUG] -> Failed to catch any article ID. Returning '0'")
+        # print("[DEBUG] -> Failed to catch any article ID. Returning '0'")
         return "0"

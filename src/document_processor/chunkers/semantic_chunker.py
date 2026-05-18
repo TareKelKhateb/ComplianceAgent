@@ -36,15 +36,23 @@ class Chunk(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Matches "Article 5", "### المادة 12", etc. and extracts the number.
-# _ARTICLE_NUMBER_RE = re.compile(
-#     r"(?:Article|المادة|مادة)\s+(\d+)", re.IGNORECASE
-# )
-# _ARTICLE_NUMBER_RE = re.compile(r"(?:Article|المادة|ماده)\s+([0-9\u0660-\u0669\w]+)", re.IGNORECASE)
+# Matches Arabic article headers: "### المادة 12", "ماده (٦)", etc.
+_ARABIC_ARTICLE_NUMBER_RE = re.compile(
+    r"(?:الماد[ةه]|ماد[ةه])\s*\(?\s*([0-9\u0660-\u0669]+)\)?",
+    re.IGNORECASE,
+)
 
+# Matches English article headers in multiple formats:
+#   "Article 5"  |  "Article (4)"  |  "(Article 1)"  |  "## Article 1 Some title"
+_ENGLISH_ARTICLE_NUMBER_RE = re.compile(
+    r"\(?\s*Article\s*\(?\s*(\d+)\s*\)?",
+    re.IGNORECASE,
+)
+
+# Combined convenience alias used by _extract_article_number
 _ARTICLE_NUMBER_RE = re.compile(
-    r"(?:Article|الماد[ةه]|ماد[ةه])\s*\(?\s*([0-9\u0660-\u0669\w]+)\)?", 
-    re.IGNORECASE
+    r"(?:Article|الماد[ةه]|ماد[ةه])\s*\(?\s*([0-9\u0660-\u0669\w]+)\)?",
+    re.IGNORECASE,
 )
 
 
@@ -53,13 +61,31 @@ _ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+")
 
 
 def _extract_article_number(header: str) -> Optional[Union[int, str]]:
-    """Return the numeric article number from *header*, or ``None``."""
-    m = _ARTICLE_NUMBER_RE.search(header)
+    """Return the numeric article number from *header*, or ``None``.
+
+    Resolution order:
+    1. Arabic patterns  (e.g. ``مادة (٦)``  or  ``المادة 12``)
+    2. English patterns (e.g. ``Article 5``, ``Article (4)``, ``(Article 1)``)
+    """
+    # -- Arabic first (preserves existing behaviour) -----------------------
+    m = _ARABIC_ARTICLE_NUMBER_RE.search(header)
+    if m:
+        raw = m.group(1)
+        # Convert Eastern-Arabic digits to Western digits
+        eastern = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        try:
+            return int(raw.translate(eastern))
+        except ValueError:
+            return raw
+
+    # -- English next -------------------------------------------------------
+    m = _ENGLISH_ARTICLE_NUMBER_RE.search(header)
     if m:
         try:
             return int(m.group(1))
         except ValueError:
             return m.group(1)
+
     return None
 
 
