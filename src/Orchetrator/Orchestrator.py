@@ -82,14 +82,31 @@ class _ColorFormatter(logging.Formatter):
 
 
 def _setup_logging(level: int = logging.INFO) -> None:
-    """Attach a coloured StreamHandler to the root logger (idempotent)."""
+    """Attach a coloured StreamHandler and a RotatingFileHandler to the root logger (idempotent)."""
     root = logging.getLogger()
     if root.handlers:
         return  # already configured (e.g. when imported as a module)
     root.setLevel(level)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(_ColorFormatter())
-    root.addHandler(handler)
+    
+    # 1. Console Stream Handler (coloured)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(_ColorFormatter())
+    root.addHandler(console_handler)
+    
+    # 2. File Handler (saved to logs/orchestrator.log with a standard format)
+    log_dir = os.path.join(project_root, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "orchestrator.log")
+    
+    file_formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    file_handler.setFormatter(file_formatter)
+    root.addHandler(file_handler)
 
 
 _setup_logging()
