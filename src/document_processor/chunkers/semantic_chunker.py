@@ -244,7 +244,7 @@ class SemanticChunker(BaseChunker):
                 j = next(it)
             except StopIteration:
                 logger.warning(
-                    "SemanticChunker: doc_id=%d – header at position %d has no "
+                    "SemanticChunker: doc_id=%s – header at position %d has no "
                     "corresponding body; skipping: %r",
                     doc_id,
                     i,
@@ -255,7 +255,7 @@ class SemanticChunker(BaseChunker):
             body_raw = remaining[j]
             if not isinstance(header, str) or not isinstance(body_raw, str):
                 logger.warning(
-                    "SemanticChunker: doc_id=%d – unexpected type at positions "
+                    "SemanticChunker: doc_id=%s – unexpected type at positions "
                     "(%d, %d): header=%r body=%r; skipping.",
                     doc_id,
                     i,
@@ -269,7 +269,7 @@ class SemanticChunker(BaseChunker):
             body = body_raw.strip()
             if not body:
                 logger.warning(
-                    "SemanticChunker: doc_id=%d – article chunk at index %d has an empty body "
+                    "SemanticChunker: doc_id=%s – article chunk at index %d has an empty body "
                     "(header: %r). This may indicate a PDF extraction issue.",
                     doc_id,
                     idx,
@@ -295,7 +295,7 @@ class SemanticChunker(BaseChunker):
             article_count += 1
 
         logger.info(
-            "SemanticChunker: doc_id=%d – %d chunks created "
+            "SemanticChunker: doc_id=%s – %d chunks created "
             "(%d articles, %d preamble).",
             doc_id,
             len(chunks),
