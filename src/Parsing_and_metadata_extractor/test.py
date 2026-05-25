@@ -89,9 +89,11 @@ if __name__ == "__main__":
     else:
         total_docs = len(scraped_data)
 
-    # 2. Initialise the extractor and show current DB state -----------------
+    # 2. Initialise the extractor, wipe database, and show current DB state --
     parser = ParsingMetaDataExtractor()
 
+    logger.info("🧹 Wiping all existing metadata from the database...")
+    parser.reset_metadate()
 
     _print_banner("Current Database State (before pipeline run)")
     parser.print_database_stats()
@@ -101,7 +103,7 @@ if __name__ == "__main__":
     _print_banner("Running Ingestion Pipeline")
     stats = parser.process_pipeline_general(
         scraped_data=scraped_data,
-        push_to_dagshub=True,   # set False to skip DVC push (dry-run)
+        push_to_dagshub=False,   # set False to skip DVC push (dry-run)
     )
 
     # 4. Print summary -------------------------------------------------------

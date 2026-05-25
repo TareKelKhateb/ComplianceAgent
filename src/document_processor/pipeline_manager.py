@@ -7,6 +7,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Core component imports
 from .extractors.base_extractor import BaseExtractor
 from .extractors.easyocr_extractor import EasyOcrExtractor
@@ -347,10 +351,14 @@ class OCRPipeline:
     # Batch processing
     # ------------------------------------------------------------------
 
-    def process_pending_queue(self, max_workers: int = 5) -> None:
+    def process_pending_queue(self, max_workers: Optional[int] = None) -> None:
         """
         Fetch all documents with status 'pending' and run them using a Producer-Consumer architecture.
         """
+        if max_workers is None:
+            env_val = os.getenv("MAX_WORKERS")
+            max_workers = int(env_val) if env_val else 5
+
         pending_docs = self.store.get_pending_documents()
         if not pending_docs:
             print("[*] No pending documents found in the queue.")
@@ -359,7 +367,7 @@ class OCRPipeline:
         print(f"[*] Found {len(pending_docs)} pending document(s).")
         self.run_batch(pending_docs, max_workers=max_workers)
 
-    def run_batch(self, documents: List[Dict[str, Any]], max_workers: int = 5) -> None:
+    def run_batch(self, documents: List[Dict[str, Any]], max_workers: Optional[int] = None) -> None:
         """
         Process a specific list of documents using the Producer-Consumer architecture.
         OCR is parallelized across workers, while DB insertion is forced to be sequential.
@@ -368,12 +376,16 @@ class OCRPipeline:
         ----------
         documents : List[Dict[str, Any]]
             A list of document dictionaries. Each must contain 'id' and 'file_path'.
-        max_workers : int
+        max_workers : int, optional
             Maximum number of concurrent OCR threads.
         """
         if not documents:
             print("[*] No documents provided for batch processing.")
             return
+
+        if max_workers is None:
+            env_val = os.getenv("MAX_WORKERS")
+            max_workers = int(env_val) if env_val else 5
 
         print(f"[*] Starting parallel batch processing for {len(documents)} document(s)…")
         
