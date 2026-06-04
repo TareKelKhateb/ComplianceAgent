@@ -32,15 +32,17 @@ QUICKSTART:
 
 import csv
 import json
+import logging
 import os
 import sqlite3
-from typing import Optional
 import subprocess
 import shutil
-import sqlite3
 from contextlib import contextmanager
-from typing import List, Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+# Module-level logger — inherits the application's root logging configuration.
+logger = logging.getLogger(__name__)
 
 from .db import (
     init_db,
@@ -513,24 +515,124 @@ class MetadataStore:
     # READ / QUERY
     # =======================================================================
 
-    def get_document_by_id(self, document_id: str) -> StorageResult:
+    def get_document_by_id(self, doc_id: str) -> StorageResult:
         """
-        Get one document by its database ID.
+        Retrieve a single document record from the database by its unique custom ID.
+
+        This method executes a parameterised SELECT query and maps every column of
+        the ``documents`` table — identity fields, scraped metadata, storage fields,
+        and OCR status fields — into a fully populated ``StoredDocument`` instance.
+
+        Args:
+            doc_id (str): The unique custom ID of the document to retrieve
+                          (e.g. ``"01_banking_laws"``).  This matches the ``id``
+                          primary key column in the ``documents`` table.
 
         Returns:
-            StorageResult where .data is StoredDocument or None
+            StorageResult:
+                - **Found**:     ``success=True``, ``message`` confirms the ID and
+                  version, ``data`` is a fully populated ``StoredDocument``.
+                - **Not found**: ``success=False``, ``message`` states the ID was
+                  not found, ``data`` is ``None``.
+                - **DB error**:  ``success=False``, ``message`` contains the error
+                  description, ``data`` is ``None``.  The exception is also logged
+                  at ERROR level so it appears in the application log.
+
+        Example::
+
+            result = store.get_document_by_id("01_banking_laws")
+            if result.success:
+                doc: StoredDocument = result.data
+                print(doc.title, doc.ocr_status)
+            else:
+                print(result.message)
         """
-        doc = get_document_by_id(self.db_path, document_id)
-        if not doc:
+        query = "SELECT * FROM documents WHERE id = ? LIMIT 1"
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute(query, (doc_id,))
+                row = cursor.fetchone()
+
+            # ----------------------------------------------------------------
+            # Case 1 — document not found
+            # ----------------------------------------------------------------
+            if row is None:
+                return StorageResult(
+                    success=False,
+                    message=(
+                        f"Document not found: no record exists with id='{doc_id}'. "
+                        "Please verify the ID and try again."
+                    ),
+                    data=None,
+                )
+
+            # ----------------------------------------------------------------
+            # Case 2 — document found: map ALL columns to the dataclass
+            # ----------------------------------------------------------------
+            # Using explicit field mapping (instead of **dict(row)) ensures that:
+            #   a) type coercions are applied correctly (e.g. bool for is_last)
+            #   b) OCR status fields are always included, even on older DB schemas
+            #      where _row_to_document() in db.py may not yet cover them.
+            document = StoredDocument(
+                # -- Identity --------------------------------------------------
+                id=row["id"],
+                file_url=row["file_url"],
+
+                # -- Scraped metadata ------------------------------------------
+                title=row["title"],
+                document_type=row["document_type"],
+                issuing_entity=row["issuing_entity"],
+                document_number=row["document_number"],
+                year=row["year"],
+                date=row["date"],
+                language=row["language"],
+                category=row["category"],
+                subcategory=row["subcategory"],
+
+                # -- Storage fields --------------------------------------------
+                sha256_hash=row["sha256_hash"],
+                version=row["version"],
+                is_last=bool(row["is_last"]),
+                file_path=row["file_path"],
+                file_size_bytes=row["file_size_bytes"],
+                download_status=row["download_status"],
+                created_at=row["created_at"],
+
+                # -- OCR status fields -----------------------------------------
+                ocr_status=row["ocr_status"],
+                ocr_processed_at=row["ocr_processed_at"],
+                retry_count=row["retry_count"],
+            )
+
+            return StorageResult(
+                success=True,
+                message=(
+                    f"Document retrieved successfully: id='{doc_id}' "
+                    f"(version={document.version}, "
+                    f"ocr_status='{document.ocr_status}')."
+                ),
+                data=document,
+            )
+
+        # --------------------------------------------------------------------
+        # Case 3 — database-level error (connection issue, corrupted schema…)
+        # --------------------------------------------------------------------
+        except sqlite3.Error as exc:
+            logger.error(
+                "[MetadataStore.get_document_by_id] Database error while retrieving "
+                "doc_id='%s': %s",
+                doc_id,
+                exc,
+                exc_info=True,
+            )
             return StorageResult(
                 success=False,
-                message=f"No document found with id={document_id}.",
+                message=(
+                    f"Database error while retrieving document id='{doc_id}': {exc}"
+                ),
+                data=None,
             )
-        return StorageResult(
-            success=True,
-            message=f"Found document id={document_id} (version {doc.version}).",
-            data=doc,
-        )
 
     def get_latest_document_by_url(self, file_url: str) -> StorageResult:
         """
