@@ -39,6 +39,7 @@ Backward compatibility:
 
 from __future__ import annotations
 
+import json
 import hashlib
 import logging
 import re
@@ -298,6 +299,30 @@ class PipelineManager:
             store_payload.get("title", "—"),
             parse_method,
         )
+
+        # ── 7. Save outputs ──────────────────────────────────────────────────
+        try:
+            metadata_dir = Path("data/metadata")
+            text_dir = Path("data/text")
+            
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            text_dir.mkdir(parents=True, exist_ok=True)
+            
+            metadata_path = metadata_dir / f"{doc_id}.json"
+            text_path = text_dir / f"{doc_id}.txt"
+            
+            with open(metadata_path, "w", encoding="utf-8") as f:
+                json.dump(store_payload, f, indent=4, ensure_ascii=False)
+                
+            with open(text_path, "w", encoding="utf-8") as f:
+                f.write(raw_text)
+                
+            logger.info(
+                "[PipelineManager] Saved metadata -> %s, text -> %s",
+                metadata_path, text_path
+            )
+        except Exception as e:
+            logger.error("[PipelineManager] Failed to save outputs: %s", e)
 
         return ParseResult(
             success=True,
