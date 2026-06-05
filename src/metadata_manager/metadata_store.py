@@ -52,6 +52,8 @@ from .db import (
     get_document_by_id,            # Use this instead of db_get_by_id
     get_latest_by_url,             # Use this instead of db_get_latest_by_url
     get_all_versions_by_url,       # (Correct)
+    get_all_versions_by_id,
+    get_latest_by_id,
     get_all_latest_documents,      # Use this instead of db_get_all_latest
     search_by_metadata,            # Use this instead of db_search
     get_documents_by_custom_filter,
@@ -190,11 +192,11 @@ class MetadataStore:
                         "Your teammate should compute this before calling insert_document().",
             )
 
-        check = check_hash(self.db_path, file_url, sha256_hash)
+        check = check_hash(self.db_path, id, sha256_hash)
 
         if check["action"] == "skip":
             # return the existing record so the caller still gets a StoredDocument
-            existing = get_latest_by_url(self.db_path, file_url)
+            existing = get_document_by_id(self.db_path, id)
             return StorageResult(
                 success=True,
                 message=f"Skipped (no insert needed): {check['reason']}",
@@ -672,6 +674,44 @@ class MetadataStore:
             data=docs,
         )
 
+    def get_latest_document_by_id(self, document_id: str) -> StorageResult:
+        """
+        Get the latest version of a document by ID.
+
+        Returns:
+            StorageResult where .data is StoredDocument
+        """
+        doc = get_latest_by_id(self.db_path, document_id)
+        if not doc:
+            return StorageResult(
+                success=False,
+                message=f"No document found for ID '{document_id}'.",
+            )
+        return StorageResult(
+            success=True,
+            message=f"Latest version of '{document_id}' is version {doc.version}.",
+            data=doc,
+        )
+
+    def get_all_versions_by_id(self, document_id: str) -> StorageResult:
+        """
+        Get all versions of a document by ID, ordered oldest → newest.
+
+        Returns:
+            StorageResult where .data is list of StoredDocument
+        """
+        docs = get_all_versions_by_id(self.db_path, document_id)
+        if not docs:
+            return StorageResult(
+                success=False,
+                message=f"No documents found for ID '{document_id}'.",
+            )
+        return StorageResult(
+            success=True,
+            message=f"Found {len(docs)} version(s) for ID '{document_id}'.",
+            data=docs,
+        )
+
     def get_all_latest_documents(self) -> StorageResult:
         """
         Get the latest version of every document in the DB.
@@ -792,33 +832,31 @@ class MetadataStore:
 
         return docs
 
-    def check_document_exists(self, file_url: str = None, sha256_hash: str = None) -> StorageResult:
+    def check_document_exists(self, document_id: str = None, file_url: str = None, sha256_hash: str = None) -> StorageResult:
         """
-        Check if a document already exists by URL or hash (or both).
+        Check if a document already exists by ID, URL, or hash.
 
         Returns:
             StorageResult where .data is True/False
         """
-        if not file_url and not sha256_hash:
+        if not document_id and not file_url and not sha256_hash:
             return StorageResult(
                 success=False,
-                message="Provide at least one of: file_url, sha256_hash.",
+                message="Provide at least one of: document_id, file_url, sha256_hash.",
             )
 
-        docs = search_by_metadata(
-            self.db_path,
-            latest_only=False,
-        )
-        found = [
-            d for d in docs
-            if (file_url and d.file_url == file_url)
-            or (sha256_hash and d.sha256_hash == sha256_hash)
-        ]
-        exists = len(found) > 0
+        with self._get_connection() as conn:
+            if document_id:
+                row = conn.execute("SELECT 1 FROM documents WHERE id = ? LIMIT 1", (document_id,)).fetchone()
+            elif file_url:
+                row = conn.execute("SELECT 1 FROM documents WHERE file_url = ? LIMIT 1", (file_url,)).fetchone()
+            else:
+                row = conn.execute("SELECT 1 FROM documents WHERE sha256_hash = ? LIMIT 1", (sha256_hash,)).fetchone()
+            exists = row is not None
+
         return StorageResult(
             success=True,
-            message=f"Document {'found' if exists else 'not found'} — "
-                    f"matched {len(found)} record(s).",
+            message=f"Document {'found' if exists else 'not found'}.",
             data=exists,
         )
 
@@ -1053,24 +1091,25 @@ class MetadataStore:
         
         return result
     
-    def sync_to_dagshub(self, local_pdf_path: str, file_url: str = None) -> bool:
+    def sync_to_dagshub(self, local_pdf_path: str, document_id: str = None, file_url: str = None) -> bool:
         """
         Orchestrates the movement of a local file into the DVC vault and 
         pushes the changes to DagsHub. Updates the metadata database upon success.
         
         Args:
             local_pdf_path (str): Path to the local PDF file to sync
-            file_url (str, optional): Document URL for database lookup. If provided,
-                                     the document status will be marked as 'uploaded'
-                                     after successful sync.
+            document_id (str, optional): Document ID for database lookup. If provided,
+                                         the document status will be marked as 'uploaded'.
+            file_url (str, optional): Fallback document URL for database lookup.
         
         Returns:
             bool: True if sync and (optionally) database update succeeded, False otherwise
         
         Database Integration:
+            - If document_id is provided, searches for latest document by ID
             - If file_url is provided, searches for latest document by URL
             - Updates download_status to 'uploaded' upon successful dvc push
-            - If document not found by URL, warns but returns True (file was synced)
+            - If document not found, warns but returns True (file was synced)
         """
         if not os.path.exists(local_pdf_path):
             print(f"Error: File not found at {local_pdf_path}")
@@ -1102,10 +1141,15 @@ class MetadataStore:
             print(f"Successfully synced {file_name} to DagsHub storage.")
 
             # 6. Update database metadata upon successful push
-            if file_url:
+            if document_id or file_url:
                 try:
-                    # Find the document by URL and mark as uploaded
-                    doc = get_latest_by_url(self.db_path, file_url)
+                    if document_id:
+                        doc = get_latest_by_id(self.db_path, document_id)
+                        identifier = f"ID '{document_id}'"
+                    else:
+                        doc = get_latest_by_url(self.db_path, file_url)
+                        identifier = f"URL '{file_url}'"
+
                     if doc:
                         update_result = update_document_file_info(
                             self.db_path,
@@ -1117,7 +1161,7 @@ class MetadataStore:
                         else:
                             print(f"⚠ Warning: Document {doc.id} not updated in DB (unexpected)")
                     else:
-                        print(f"⚠ Warning: Document with URL '{file_url}' not found in DB. "
+                        print(f"⚠ Warning: Document with {identifier} not found in DB. "
                               f"File synced to DagsHub but DB not updated.")
                 except Exception as db_error:
                     print(f"⚠ Warning: Database update failed: {db_error}. "
