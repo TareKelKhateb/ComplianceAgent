@@ -23,7 +23,8 @@ except ImportError as _e:
     raise ImportError("openai is required: pip install openai") from _e
 
 # pyrefly: ignore [missing-import]
-from .models import EXTRACTION_PROMPT, ParserConfig
+from .models import EXTRACTION_PROMPT
+from ..config import CorporateConfig
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,8 @@ class LlamaClient:
 
     Parameters
     ----------
-    config : ParserConfig
-        Supplies ``api_key``, ``base_url``, and ``model``.
+    config : CorporateConfig
+        Supplies ``llama_api_key``, ``llama_api_base_url``, and ``llama_model``.
 
     Example
     -------
@@ -50,8 +51,22 @@ class LlamaClient:
         metadata: dict = client.extract_metadata(raw_text)
     """
 
-    def __init__(self, config: ParserConfig) -> None:
+    def __init__(self, config: CorporateConfig) -> None:
         self._cfg = config
+        
+        # Validation Debug
+        key_start = self._cfg.mistral_api_key[:4] if self._cfg.mistral_api_key else "None"
+        logger.info(
+            "[LlamaClient] Initialization Debug - base_url: %s, api_key_start: %s***",
+            self._cfg.mistral_api_base_url,
+            key_start
+        )
+        print(f"[LlamaClient] Initialization Debug - base_url: {self._cfg.mistral_api_base_url}, api_key_start: {key_start}***")
+        
+        self.client = OpenAI(
+            api_key=self._cfg.mistral_api_key,
+            base_url=self._cfg.mistral_api_base_url,
+        )
 
     # ------------------------------------------------------------------
     # Public
@@ -89,9 +104,6 @@ class LlamaClient:
         openai.APIError
             Propagated if the HTTP request fails or the API returns an error.
         """
-        # ── Guard: config ────────────────────────────────────────────────────
-        self._cfg.validate()   # raises ValueError if api_key is missing
-
         # ── Truncate ─────────────────────────────────────────────────────────
         text_for_prompt = raw_text[:_MAX_TEXT_CHARS]
         if len(raw_text) > _MAX_TEXT_CHARS:
@@ -131,28 +143,26 @@ class LlamaClient:
         """
         prompt = EXTRACTION_PROMPT.format(text=text)
 
-        client = OpenAI(
-            api_key=self._cfg.api_key,
-            base_url=self._cfg.base_url,
-        )
-
         logger.debug(
             "[LlamaClient] POST %s  model=%s  prompt_chars=%d",
-            self._cfg.base_url, self._cfg.model, len(prompt),
+            self._cfg.mistral_api_base_url, self._cfg.mistral_model, len(prompt),
         )
 
-        response = client.chat.completions.create(
-            model=self._cfg.model,
+        response = self.client.chat.completions.create(
+            model=self._cfg.mistral_model,
             messages=[
                 {
                     "role": "system",
                     "content": (
                         "You are a corporate document metadata extractor. "
-                        "You can process both English and Arabic documents "
-                        "with high precision. When extracting metadata from "
-                        "Arabic documents, ensure the values are extracted in "
-                        "Arabic. Always respond with a single, valid JSON "
-                        "object and nothing else."
+                        "You can process both English and Arabic documents with high precision. "
+                        "Normalization: All classification fields, specifically 'document_type', "
+                        "'category', and 'subcategory', MUST be returned in English, automatically "
+                        "mapping Arabic terms to their appropriate English technical equivalents "
+                        "(e.g., 'Financial Statements' instead of 'القوائم المالية'). "
+                        "Preservation: The 'title' and 'issuing_entity' MUST be preserved in their "
+                        "original language as they appear in the document. "
+                        "Always respond with a single, strictly valid JSON object and nothing else."
                     ),
                 },
                 {"role": "user", "content": prompt},

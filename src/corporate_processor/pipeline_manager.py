@@ -45,18 +45,17 @@ import re
 from pathlib import Path
 from typing import Any, List, Optional
 
-# pyrefly: ignore [missing-import]
-from src.corporate_processor.parser.models import ParseResult, ParserConfig, PdfType
-# pyrefly: ignore [missing-import]
-from src.corporate_processor.parser.router import PDFRouter
-# pyrefly: ignore [missing-import]
-from src.corporate_processor.parser.text_extractor import TextExtractor
-# pyrefly: ignore [missing-import]
-from src.corporate_processor.parser.llama_client import LlamaClient
-# pyrefly: ignore [missing-import]
-from src.corporate_processor.ocr_engine import CorporateOCREngine
-# pyrefly: ignore [missing-import]
-from src.corporate_processor.extractors.base_extractor import CorporateBaseExtractor
+# Relative imports — pipeline_manager lives inside corporate_processor, so
+# sibling packages must be imported relatively, not via the src.* prefix.
+# (Using src.* here would require the parser.__init__ chain to succeed at
+#  import time, which fails when optional deps like openai are not yet installed.)
+from .parser.models import ParseResult, ParserConfig, PdfType
+from .parser.router import PDFRouter
+from .parser.text_extractor import TextExtractor
+from .parser.llama_client import LlamaClient
+from .ocr_engine import CorporateOCREngine
+from .extractors.base_extractor import CorporateBaseExtractor
+from src.corporate_processor.config import CorporateConfig
 
 logger = logging.getLogger(__name__)
 
@@ -107,13 +106,23 @@ class PipelineManager:
 
     def __init__(
         self,
-        config: Optional[ParserConfig] = None,
+        config: Optional[CorporateConfig] = None,
         ocr_extractor: Optional[CorporateBaseExtractor] = None,
     ) -> None:
-        self._cfg        = config or ParserConfig()
+        # Enforce dependency injection from CorporateConfig
+        self.config = config or CorporateConfig.load()
+        
+        # Build ParserConfig locally to satisfy legacy components without os.environ lookups
+        self._cfg = ParserConfig(
+            api_key=self.config.llama_api_key,
+            base_url=self.config.llama_api_base_url,
+            model=self.config.llama_model,
+            ocr_threshold=self.config.ocr_threshold,
+        )
+        
         self._router     = PDFRouter(self._cfg)
         self._extractor  = TextExtractor()
-        self._llama      = LlamaClient(self._cfg)
+        self._llama      = LlamaClient(self.config)
         self._ocr_engine = CorporateOCREngine(extractor=ocr_extractor)
 
         logger.debug(
