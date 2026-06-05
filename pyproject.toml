@@ -5,18 +5,29 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12, <3.13"
 dependencies = [
-    "pyyaml>=6.0.3",
+    # Web / HTTP
     "requests>=2.33.1",
-    "dvc>=3.67.1",
-    "dvc-s3>=3.3.0",
-    "easyocr>=1.7.1",
-    "opencv-python>=4.10.0.84",
+    # PDF processing
+    "pdfplumber>=0.11",         # TextExtractor + PDFRouter
     "pdf2image>=1.17.0",
+    "pypdf>=6.10.2",
+    # LLM / AI APIs
+    "openai>=1.0",              # LlamaClient (Llama API via OpenAI-compatible SDK)
+    "mistralai>=2.4.5",
+    # OCR
+    "easyocr>=1.7.1",
+    "numpy>=1.26",              # required by easyocr_extractor directly
+    "opencv-python>=4.10.0.84",
+    # Arabic / RTL text support
     "arabic-reshaper>=3.0.1",
     "python-bidi>=0.6.9",
-    "pypdf>=6.10.2",
-    "mistralai>=2.4.5",
+    # Config / utilities
+    "pyyaml>=6.0.3",
+    "python-dotenv>=1.0",       # mistral_extractor imports dotenv at module level
     "pydantic>=2.0",
+    # MLOps
+    "dvc>=3.67.1",
+    "dvc-s3>=3.3.0",
 ]
 
 [dependency-groups]
@@ -24,3 +35,8 @@ dev = [
     "jupyterlab>=4.5.7",
     "pytest>=8.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths  = ["src/corporate_processor/tests"]
+pythonpath = ["."]
+addopts    = "-v --tb=short"
