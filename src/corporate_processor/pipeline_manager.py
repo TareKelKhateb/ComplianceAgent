@@ -56,8 +56,35 @@ from .parser.llama_client import LlamaClient
 from .ocr_engine import CorporateOCREngine
 from .extractors.base_extractor import CorporateBaseExtractor
 from src.corporate_processor.config import CorporateConfig
+import re 
 
 logger = logging.getLogger(__name__)
+
+def detect_legal_structure(text: str) -> bool:
+    """
+    Analyzes the text to detect if the document has a formal legal structure.
+    Returns True if at least 3 lines start with the pattern '^مادة' (Article).
+    Uses Early Exit for performance: it stops scanning as soon as the threshold is met.
+    """
+    # Regex pattern: ^ matches the start of the line, followed by 'مادة' 
+    # and then one or more digits (Arabic or Western).
+    pattern = re.compile(r"^مادة\s*[\d١٢٣٤٥٦٧٨٩٠]+")
+    
+    match_count = 0
+    
+    # Iterate through lines; Early Exit ensures we don't scan unnecessarily
+    for line in text.splitlines():
+        clean_line = line.strip()
+        
+        # Check if the line is not empty and matches the pattern
+        if clean_line and pattern.match(clean_line):
+            match_count += 1
+            
+            # Threshold of 3 confirms we are in the main body, not an intro reference
+            if match_count >= 3:
+                return True
+                
+    return False
 
 
 class PipelineManager:
@@ -258,6 +285,8 @@ class PipelineManager:
             )
 
         # ── 6. Assemble store-compatible payload ─────────────────────────────
+        metadata["is_legal_structure"] = detect_legal_structure(raw_text)
+        
         doc_id        = self._derive_doc_id(resolved, metadata)
         store_payload = self._build_payload(
             doc_id, sha256_hash, file_size_bytes, resolved, metadata
@@ -406,6 +435,7 @@ class PipelineManager:
             "language":         metadata.get("language"),
             "category":         metadata.get("category"),
             "subcategory":      metadata.get("subcategory"),
+            "is_legal_structure": metadata.get("is_legal_structure"),
             # File-level fields
             "file_path":        resolved,
             "file_size_bytes":  file_size_bytes,
