@@ -1,0 +1,35 @@
+schema: '2.0'
+stages:
+  extract_and_metadata:
+    cmd: uv run python src/corporate_processor/scripts/extract.py
+    deps:
+    - path: data/corporate/raw/
+      hash: md5
+      md5: 7e57e54576724d1f792a2d76926ebe39.dir
+      size: 757619
+      nfiles: 1
+    - path: src/corporate_processor/extractors/
+      hash: md5
+      md5: 0d5895933760e9a2be2f5b4ea7d36e5a.dir
+      size: 8121
+      nfiles: 4
+    - path: src/corporate_processor/parser/
+      hash: md5
+      md5: 60a29a0e5e40c8a0a4df8d8062f00514.dir
+      size: 35100
+      nfiles: 7
+    - path: src/corporate_processor/scripts/extract.py
+      hash: md5
+      md5: 4f032e9faff2c483688747cd45b5d6f8
+      size: 1577
+    outs:
+    - path: data/metadata/
+      hash: md5
+      md5: 7fc940c9944388bcdc111183656d04d1.dir
+      size: 990
+      nfiles: 1
+    - path: data/text/
+      hash: md5
+      md5: 377591ebf36e92d7cd55772e2a61f588.dir
+      size: 68600
+      nfiles: 1

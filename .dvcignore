@@ -28,9 +28,14 @@ __pycache__/
 .dvc/tmp/
 .dvc/config.local
 
+# Exclude legacy/unrelated pipeline modules from this project's DAG
+# This prevents DVC from picking up .dvc files in unrelated directories.
+src/Parsing_and_metadata_extractor/
+
 # Database files (tracked separately via Git)
 *.db
 !data/legal_vault.db
+!data/corporate_chunks.db
 *.sqlite3
 
 # Temporary and build files

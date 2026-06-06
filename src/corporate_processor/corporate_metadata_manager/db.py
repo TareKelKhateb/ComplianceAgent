@@ -10,10 +10,13 @@ import json
 import hashlib
 import sqlite3
 import os
+import logging
 from typing import Optional, Any, List
 from datetime import datetime, timezone
 
 from .models import StoredCorporateChunk, ChunkBatchResult
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +77,8 @@ def init_db(db_path: str) -> None:
                 chunk_hash  TEXT    NOT NULL UNIQUE,   -- Prevents duplicate refined chunks
                 metadata    TEXT,                      -- Full document metadata as JSON
                 embedding   TEXT,                      -- Nullable: JSON array, populated later
-                created_at  TEXT    NOT NULL
+                created_at  TEXT    NOT NULL,
+                updated_at  TEXT
             )
         """)
 
@@ -82,6 +86,7 @@ def init_db(db_path: str) -> None:
         evolution_columns = [
             ("metadata",    "TEXT"),
             ("embedding",   "TEXT"),
+            ("updated_at",  "TEXT"),
         ]
         for col_name, col_type in evolution_columns:
             try:
@@ -162,7 +167,8 @@ def insert_chunk(db_path: str, chunk: dict) -> Optional[StoredCorporateChunk]:
 
 def insert_chunks_batch(db_path: str, chunks: list[dict]) -> ChunkBatchResult:
     """
-    Bulk insert a list of refined chunks. Duplicate hashes are silently skipped.
+    Bulk insert or update a list of refined chunks.
+    Filters out chunks smaller than 150 characters.
 
     Args:
         db_path: Path to SQLite DB.
@@ -178,20 +184,27 @@ def insert_chunks_batch(db_path: str, chunks: list[dict]) -> ChunkBatchResult:
 
     for chunk in chunks:
         content    = chunk.get("content", "")
-        chunk_hash = compute_chunk_hash(content)
-
-        if check_chunk_hash(db_path, chunk_hash):
+        
+        # Data Filtering (Skip Logic)
+        if len(content) < 150:
+            logger.info(f"Skipped (Too small): chunk {chunk.get('chunk_index')} for doc {chunk.get('doc_id')}")
             skipped_count += 1
             continue
-
+            
+        chunk_hash = compute_chunk_hash(content)
         metadata_json = json.dumps(chunk.get("metadata", {}), ensure_ascii=False)
+        
         try:
             with _get_connection(db_path) as conn:
                 conn.execute(
                     """
                     INSERT INTO corporate_chunks
-                        (doc_id, chunk_index, content, chunk_hash, metadata, embedding, created_at)
-                    VALUES (?, ?, ?, ?, ?, NULL, ?)
+                        (doc_id, chunk_index, content, chunk_hash, metadata, embedding, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+                    ON CONFLICT(chunk_hash) DO UPDATE SET
+                        content = excluded.content,
+                        metadata = excluded.metadata,
+                        updated_at = excluded.updated_at
                     """,
                     (
                         chunk.get("doc_id"),
@@ -199,6 +212,7 @@ def insert_chunks_batch(db_path: str, chunks: list[dict]) -> ChunkBatchResult:
                         content,
                         chunk_hash,
                         metadata_json,
+                        now,
                         now,
                     ),
                 )

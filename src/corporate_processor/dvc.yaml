@@ -1,0 +1,24 @@
+stages:
+  extract_and_metadata:
+    wdir: ../../
+    cmd: uv run python src/corporate_processor/scripts/extract.py
+    deps:
+      - data/corporate/raw/
+      - src/corporate_processor/extractors/
+      - src/corporate_processor/parser/
+      - src/corporate_processor/scripts/extract.py
+    outs:
+      - data/metadata/
+      - data/text/
+
+  chunk_and_store:
+    wdir: ../../
+    cmd: uv run python src/corporate_processor/scripts/chunk_and_store.py
+    deps:
+      - data/metadata/
+      - data/text/
+      - src/corporate_processor/chunkers/
+      - src/corporate_processor/corporate_metadata_manager/
+      - src/corporate_processor/scripts/chunk_and_store.py
+    outs:
+      - data/corporate_chunks.db

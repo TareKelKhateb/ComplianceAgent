@@ -1,47 +1,45 @@
-import json
 import logging
 from pathlib import Path
 
-# Import the new Centralized Config and the Manager
 from src.corporate_processor.config import CorporateConfig
-from src.corporate_processor.pipeline_manager import PipelineManager
+from src.corporate_processor.corporate_pipeline import CorporateEndToEndPipeline
 
-# Setup basic logging to see what's happening
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+)
 logger = logging.getLogger(__name__)
 
+
 def main():
-    # 1. Initialize Centralized Configuration (Fail-fast validation happens here)
-    # This automatically loads .env and the YAML config
+    # 1. Load & validate configuration (fail-fast)
     try:
         config = CorporateConfig.load()
     except ValueError as e:
-        logger.error(f"Configuration error: {e}")
+        logger.error("Configuration error: %s", e)
         return
 
-    # 2. Define inputs and outputs
-    file_path = "data/corporate/raw/2016.pdf"
-    output_dir = Path("data/corporate/processed")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 3. Inject the config into the PipelineManager
-    print(f"--- Starting pipeline for: {file_path} ---")
-    manager = PipelineManager(config=config)
-    
-    # 4. Process the document
-    result = manager.process(file_path)
-    
-    # 5. Handle the output
+    # 2. Define the document to process
+    pdf_path = "data/corporate/raw/2016.pdf"
+
+    # 3. Run the end-to-end pipeline
+    logger.info("Starting end-to-end corporate pipeline for: %s", pdf_path)
+    pipeline = CorporateEndToEndPipeline(config=config)
+    result   = pipeline.run(pdf_path=pdf_path)
+
+    # 4. Report the outcome
     if result.success:
-        print("Pipeline success!")
-        output_path = output_dir / f"{Path(file_path).stem}.json"
-        
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(result.data, f, indent=4, ensure_ascii=False)
-            
-        print(f"JSON saved to: {output_path}")
+        logger.info("Pipeline succeeded: %s", result.message)
+        if result.data:
+            logger.info(
+                "Chunks → inserted=%d  skipped=%d  failed=%d",
+                result.data.inserted_count,
+                result.data.skipped_count,
+                result.data.failed_count,
+            )
     else:
-        print(f"Pipeline failed: {result.message}")
+        logger.error("Pipeline failed: %s", result.message)
+
 
 if __name__ == "__main__":
-    main()
+    main()

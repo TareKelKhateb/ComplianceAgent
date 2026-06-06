@@ -21,18 +21,57 @@ class CorporateChunker:
 
     def split_text_by_headers(self, text: str) -> List[str]:
         """
-        Splits text by markdown headers (##, ###, ####) using re.split.
+        Splits text by markdown headers (##, ###, ####) using re.split,
+        but applies semantic merging to prevent over-chunking and data fragmentation.
         """
         if not isinstance(text, str):
             logger.error("Validation Error: Provided text is not a string.")
             return []
             
-        # Use re.split to split before headers, keeping the headers intact
-        # using a positive lookahead for newlines followed by ##, ###, or ####
-        chunks = re.split(r'\n(?=#{2,4}\s)', text)
+        # 1. Initial split based on Markdown headers
+        raw_chunks = re.split(r'\n(?=#{2,4}\s)', text)
+        raw_chunks = [chunk.strip() for chunk in raw_chunks if chunk.strip()]
         
-        # Clean up empty chunks
-        return [chunk.strip() for chunk in chunks if chunk.strip()]
+        merged_chunks = []
+        
+        for chunk in raw_chunks:
+            # Remove Markdown formatting for pure content analysis
+            plain_text = re.sub(r'#+\s*', '', chunk).strip()
+            
+            # 2. Discard Metadata-only Chunks (e.g., '## صفحة 3' or isolated numbers/very short strings)
+            # If it's just "صفحة X" or extremely short (< 10 chars), discard it completely
+            if re.match(r'^(صفحة|page)\s*\d+$', plain_text, re.IGNORECASE) or len(plain_text) < 10:
+                logger.debug(f"Discarding metadata-only chunk: {chunk}")
+                continue
+                
+            # 3. Minimum Content Threshold
+            # If chunk is less than 100 characters, it lacks full semantic context.
+            # We merge it with the PREVIOUS chunk if one exists.
+            if len(chunk) < 100 and merged_chunks:
+                logger.debug(f"Merging short chunk (<100 chars) with previous: {chunk}")
+                merged_chunks[-1] += "\n\n" + chunk
+            else:
+                merged_chunks.append(chunk)
+                
+        # 4. Context Preservation (Forward Merging for isolated headings)
+        # If a chunk ends up being just a heading (e.g. it was >100 chars but is just a list of names/headers), 
+        # or it's an isolated heading that didn't get merged backwards, we merge it FORWARD.
+        final_chunks = []
+        i = 0
+        while i < len(merged_chunks):
+            current = merged_chunks[i]
+            
+            # If this chunk looks like an isolated heading (starts with # and is relatively short)
+            # merge it with the NEXT chunk so the heading has body text.
+            if current.startswith('#') and len(current) < 150 and i < len(merged_chunks) - 1:
+                logger.debug(f"Forward merging isolated heading: {current}")
+                final_chunks.append(current + "\n\n" + merged_chunks[i+1])
+                i += 2
+            else:
+                final_chunks.append(current)
+                i += 1
+                
+        return final_chunks
 
     def refine_chunk(self, content: str) -> str:
         """
@@ -62,7 +101,7 @@ class CorporateChunker:
                 }
             }
             
-            response = requests.post(self.config.LLM_BASE_URL, json=payload, timeout=30)
+            response = requests.post(self.config.LLM_BASE_URL, json=payload, timeout=120)
             response.raise_for_status()
             
             response_data = response.json()
