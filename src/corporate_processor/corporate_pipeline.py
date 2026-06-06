@@ -35,10 +35,15 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+# pyrefly: ignore [missing-import]
 from src.corporate_processor.config import CorporateConfig
+# pyrefly: ignore [missing-import]
 from src.corporate_processor.pipeline_manager import PipelineManager
+# pyrefly: ignore [missing-import]
 from src.corporate_processor.chunkers.corporate_chunker import CorporateChunker
+# pyrefly: ignore [missing-import]
 from src.corporate_processor.corporate_metadata_manager.corporate_store import CorporateChunkStore
+# pyrefly: ignore [missing-import]
 from src.corporate_processor.corporate_metadata_manager.models import ChunkStorageResult
 
 logger = logging.getLogger(__name__)

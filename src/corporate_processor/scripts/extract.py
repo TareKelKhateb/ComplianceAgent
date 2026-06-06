@@ -9,7 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+# pyrefly: ignore [missing-import]
 from src.corporate_processor.config import CorporateConfig
+# pyrefly: ignore [missing-import]
 from src.corporate_processor.pipeline_manager import PipelineManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")

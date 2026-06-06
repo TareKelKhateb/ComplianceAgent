@@ -1,0 +1,25 @@
+stages:
+  run_mapping_pipeline:
+    wdir: ../../
+    cmd: uv run python -m src.mapping.orchestrator
+    deps:
+      # Code dependencies
+      - src/mapping/orchestrator.py
+      - src/mapping/vector_search.py
+      - src/mapping/llm_engine/client.py
+      - src/mapping/llm_engine/prompts.txt
+      - src/mapping/data_manager/
+      
+      # Data dependencies (The databases where policies and laws are stored)
+      - data/corporate_chunks.db
+      - data/legal_vault.db
+    
+    outs:
+      # The target database output of the orchestrator
+      - mapping.db:
+          cache: false
+      
+    metrics:
+      # Tracked metrics generated at the end of the pipeline
+      - data/mapping_metrics.json:
+          cache: false

@@ -21,4 +21,5 @@ stages:
       - src/corporate_processor/corporate_metadata_manager/
       - src/corporate_processor/scripts/chunk_and_store.py
     outs:
-      - data/corporate_chunks.db
+      - data/corporate_chunks.db:
+          cache: false

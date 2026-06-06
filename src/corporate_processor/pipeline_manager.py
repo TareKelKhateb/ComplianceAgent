@@ -56,6 +56,7 @@ from .parser.text_extractor import TextExtractor
 from .parser.llama_client import LlamaClient
 from .ocr_engine import CorporateOCREngine
 from .extractors.base_extractor import CorporateBaseExtractor
+# pyrefly: ignore [missing-import]
 from src.corporate_processor.config import CorporateConfig
 import re 
 

@@ -20,8 +20,8 @@ stages:
       nfiles: 7
     - path: src/corporate_processor/scripts/extract.py
       hash: md5
-      md5: 4f032e9faff2c483688747cd45b5d6f8
-      size: 1577
+      md5: f269003354459cb0fa8ec03ed497ffad
+      size: 1647
     outs:
     - path: data/metadata/
       hash: md5
@@ -33,3 +33,35 @@ stages:
       md5: 377591ebf36e92d7cd55772e2a61f588.dir
       size: 68600
       nfiles: 1
+  chunk_and_store:
+    cmd: uv run python src/corporate_processor/scripts/chunk_and_store.py
+    deps:
+    - path: data/metadata/
+      hash: md5
+      md5: 7fc940c9944388bcdc111183656d04d1.dir
+      size: 990
+      nfiles: 1
+    - path: data/text/
+      hash: md5
+      md5: 377591ebf36e92d7cd55772e2a61f588.dir
+      size: 68600
+      nfiles: 1
+    - path: src/corporate_processor/chunkers/
+      hash: md5
+      md5: 903ab107b3226e6237af9fa50b2b3c1b.dir
+      size: 10965
+      nfiles: 4
+    - path: src/corporate_processor/corporate_metadata_manager/
+      hash: md5
+      md5: b52ec88fc558ec7fa77ce1804ff18b89.dir
+      size: 21786
+      nfiles: 4
+    - path: src/corporate_processor/scripts/chunk_and_store.py
+      hash: md5
+      md5: f0ee2546cf91dd05230d251e652c348d
+      size: 2863
+    outs:
+    - path: data/corporate_chunks.db
+      hash: md5
+      md5: 30fc7293c7410abff0cd56914295d2de
+      size: 217088
