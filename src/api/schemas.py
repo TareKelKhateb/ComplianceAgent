@@ -1,8 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional
-from datetime import date
 from typing import List
-
+from datetime import date, datetime
 
 # ----------------------------------
 # 1. Schema for Adding a Document
@@ -34,7 +33,9 @@ class BulkImportResult(BaseModel):
 # ----------------------------------
 class DocumentResponse(DocumentCreate):
     id: int
-    
+    read_count: int
+    last_read_at: Optional[datetime]
+    added_at: datetime
     class Config:
         from_attributes = True # Tells Pydantic to read the SQLModel object
 

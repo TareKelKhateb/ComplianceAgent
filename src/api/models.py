@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict, Any
 from sqlmodel import SQLModel, Field, Column, JSON
-from datetime import date
+from datetime import date, datetime, timezone
 
 # ----------------------------------
 # 1. User & RBAC Table (Unchanged)
@@ -38,3 +38,9 @@ class Document(SQLModel, table=True):
     # Audit & Tracking
     uploaded_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
     extra_metadata: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
+
+
+    # Usage Tracking
+    read_count: int = Field(default=0)
+    last_read_at: Optional[datetime] = Field(default=None)
+    added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

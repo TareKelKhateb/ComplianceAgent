@@ -4,15 +4,22 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 from typing import List
+from datetime import datetime, timezone
+
 
 from ..database import get_session
 from ..models import Document
 from ..schemas import DocumentCreate, DocumentResponse, DocumentUpdate, ImportPreviewItem, BulkImportResult
+from ..schemas import ScrapedDocument, ImportPreviewItem, MapAndImportRequest
+
+
 
 router = APIRouter(
     prefix="/documents",
     tags=["Documents"]
 )
+
+
 
 # ---------------------------------------------------------
 # ⚙️ CONFIGURATION VARIABLE: Dynamic Scraped File Path
@@ -188,16 +195,6 @@ def update_document(doc_id: int, doc_in: DocumentUpdate, session: Session = Depe
     return db_doc
 
 
-
-
-
-# ---------------------------------------------------------
-# 🚀 NEW: Auto-Read Local Scraped File
-# ---------------------------------------------------------
-from ..schemas import ScrapedDocument, ImportPreviewItem, MapAndImportRequest
-
-# ... (Keep your SCRAPED_JSON_PATH variable where it is) ...
-
 @router.get("/preview-local-file", response_model=List[ImportPreviewItem])
 def preview_local_scraped_file(session: Session = Depends(get_session)):
     """Reads local JSON and checks which files are new based on Title."""
@@ -287,14 +284,112 @@ def map_and_import_document(req: MapAndImportRequest, session: Session = Depends
 @router.get("/export-for-pipeline", response_model=List[List[DocumentResponse]])
 def export_for_pipeline(session: Session = Depends(get_session)):
     """
-    Exports all approved database documents into the exact nested JSON array format 
-    required by the downstream parsing and metadata extraction pipelines.
+    Exports all database documents for downstream pipelines.
+    Automatically increments the read_count and last_read_at for every exported file.
     """
     # 1. Fetch ALL documents currently saved in the database
     all_documents = session.exec(select(Document)).all()
     
-    # 2. Wrap the list of documents in an outer list to match the pipeline requirement
+    # 2. 🚀 NEW: Update telemetry metrics for ALL exported documents
+    current_time = datetime.now(timezone.utc)
+    
+    for db_doc in all_documents:
+        db_doc.read_count += 1
+        db_doc.last_read_at = current_time
+        session.add(db_doc)
+        
+    # Save all telemetry updates to SQLite in one single transaction
+    session.commit() 
+    
+    # 3. Wrap the list of documents in an outer list to match the pipeline requirement
     # Format becomes: [ [ {doc1}, {doc2}, ... ] ]
     pipeline_payload = [all_documents]
     
     return pipeline_payload
+
+
+@router.get("/get-unread-documents", response_model=List[DocumentResponse])
+def get_unread_documents(session: Session = Depends(get_session)):
+    """
+    Fetch all new documents that have not been read yet.
+    WARNING: This now marks them all as read upon extraction!
+    """
+    unread_docs = session.exec(select(Document).where(Document.read_count == 0)).all()
+    
+    # 🚀 Update telemetry to mark them as read
+    current_time = datetime.now(timezone.utc)
+    for doc in unread_docs:
+        doc.read_count += 1
+        doc.last_read_at = current_time
+        session.add(doc)
+        
+    session.commit()
+    
+    return unread_docs
+
+@router.get("/added-since", response_model=List[DocumentResponse])
+def get_documents_added_since(since: datetime, session: Session = Depends(get_session)):
+    """
+    Reporting function: Fetch documents added after a specific time, 
+    and mark them all as read.
+    """
+    recent_docs = session.exec(
+        select(Document).where(Document.added_at >= since)
+    ).all()
+    
+    # 🚀 Update telemetry to mark them as read
+    current_time = datetime.now(timezone.utc)
+    for doc in recent_docs:
+        doc.read_count += 1
+        doc.last_read_at = current_time
+        session.add(doc)
+        
+    session.commit()
+    
+    return recent_docs
+
+
+@router.get("/title/{title}", response_model=DocumentResponse)
+def read_document_by_title(title: str, session: Session = Depends(get_session)):
+    """
+    Fetch a single document by its title. 
+    Every time this is called, it increments the read_count and updates last_read_at.
+    """
+    # 1. Find the document
+    db_doc = session.exec(select(Document).where(Document.title == title)).first()
+    
+    if not db_doc:
+        raise HTTPException(status_code=404, detail=f"Document '{title}' not found.")
+        
+    # 2. Update telemetry metrics
+    db_doc.read_count += 1
+    db_doc.last_read_at = datetime.now(timezone.utc)
+    
+    # 3. Save changes and return
+    session.add(db_doc)
+    session.commit()
+    session.refresh(db_doc)
+    
+    return db_doc
+
+# ---------------------------------------------------------
+# 📊 TELEMETRY & REPORTING APIs
+# ---------------------------------------------------------
+
+@router.post("/reset-telemetry")
+def reset_all_telemetry(session: Session = Depends(get_session)):
+    """
+    Admin function: Resets read_count to 0 and last_read_at to None for every document in the vault.
+    """
+    all_docs = session.exec(select(Document)).all()
+    
+    for doc in all_docs:
+        doc.read_count = 0
+        doc.last_read_at = None
+        session.add(doc)
+        
+    session.commit()
+    
+    return {"message": f"Successfully wiped telemetry data for {len(all_docs)} documents."}
+
+
