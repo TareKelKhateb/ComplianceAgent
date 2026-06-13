@@ -32,15 +32,17 @@ QUICKSTART:
 
 import csv
 import json
+import logging
 import os
 import sqlite3
-from typing import Optional
 import subprocess
 import shutil
-import sqlite3
 from contextlib import contextmanager
-from typing import List, Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+# Module-level logger — inherits the application's root logging configuration.
+logger = logging.getLogger(__name__)
 
 from .db import (
     init_db,
@@ -52,6 +54,7 @@ from .db import (
     get_all_versions_by_url,       # (Correct)
     get_all_latest_documents,      # Use this instead of db_get_all_latest
     search_by_metadata,            # Use this instead of db_search
+    get_documents_by_custom_filter,
     get_documents_by_download_status, # Use this for status-based queries
     mark_download_failed,
     insert_documents_batch,
@@ -166,9 +169,15 @@ class MetadataStore:
         Returns:
             StorageResult where .data is the StoredDocument
         """
+        id          = data.get("id", "").strip()
         file_url    = data.get("file_url", "").strip()
         sha256_hash = data.get("sha256_hash", "").strip()
 
+        if not id:
+            return StorageResult(
+                success=False,
+                message="Insert failed: 'id' is required but missing. (e.g., '01_banking_laws')",
+            )
         if not file_url:
             return StorageResult(
                 success=False,
@@ -285,7 +294,7 @@ class MetadataStore:
     # UPDATE
     # =======================================================================
 
-    def update_document_by_id(self, document_id: int, fields: dict) -> StorageResult:
+    def update_document_by_id(self, document_id: str, fields: dict) -> StorageResult:
         """
         Update any metadata fields of a document by its ID.
         Only the keys you provide are updated — everything else stays the same.
@@ -380,7 +389,7 @@ class MetadataStore:
     # DELETE
     # =======================================================================
 
-    def delete_document_by_id(self, document_id: int) -> StorageResult:
+    def delete_document_by_id(self, document_id: str) -> StorageResult:
         """Permanently removes a document record from the database by its ID."""
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -453,7 +462,7 @@ class MetadataStore:
             data=count,
         )
 
-    def delete_documents_batch_by_ids(self, document_ids: list[int]) -> StorageResult:
+    def delete_documents_batch_by_ids(self, document_ids: list[str]) -> StorageResult:
         """
         Delete multiple documents by a list of IDs.
 
@@ -490,11 +499,10 @@ class MetadataStore:
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM document_chunks")
                 conn.execute("DELETE FROM documents")
-                # Reset the AUTOINCREMENT counter so IDs restart from 1
-                conn.execute(
-                    "DELETE FROM sqlite_sequence WHERE name = 'documents'"
-                )
+                # Reset the AUTOINCREMENT counter
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('documents', 'document_chunks')")
                 conn.commit()
             return StorageResult(
                 success=True,
@@ -507,24 +515,124 @@ class MetadataStore:
     # READ / QUERY
     # =======================================================================
 
-    def get_document_by_id(self, document_id: int) -> StorageResult:
+    def get_document_by_id(self, doc_id: str) -> StorageResult:
         """
-        Get one document by its database ID.
+        Retrieve a single document record from the database by its unique custom ID.
+
+        This method executes a parameterised SELECT query and maps every column of
+        the ``documents`` table — identity fields, scraped metadata, storage fields,
+        and OCR status fields — into a fully populated ``StoredDocument`` instance.
+
+        Args:
+            doc_id (str): The unique custom ID of the document to retrieve
+                          (e.g. ``"01_banking_laws"``).  This matches the ``id``
+                          primary key column in the ``documents`` table.
 
         Returns:
-            StorageResult where .data is StoredDocument or None
+            StorageResult:
+                - **Found**:     ``success=True``, ``message`` confirms the ID and
+                  version, ``data`` is a fully populated ``StoredDocument``.
+                - **Not found**: ``success=False``, ``message`` states the ID was
+                  not found, ``data`` is ``None``.
+                - **DB error**:  ``success=False``, ``message`` contains the error
+                  description, ``data`` is ``None``.  The exception is also logged
+                  at ERROR level so it appears in the application log.
+
+        Example::
+
+            result = store.get_document_by_id("01_banking_laws")
+            if result.success:
+                doc: StoredDocument = result.data
+                print(doc.title, doc.ocr_status)
+            else:
+                print(result.message)
         """
-        doc = get_document_by_id(self.db_path, document_id)
-        if not doc:
+        query = "SELECT * FROM documents WHERE id = ? LIMIT 1"
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute(query, (doc_id,))
+                row = cursor.fetchone()
+
+            # ----------------------------------------------------------------
+            # Case 1 — document not found
+            # ----------------------------------------------------------------
+            if row is None:
+                return StorageResult(
+                    success=False,
+                    message=(
+                        f"Document not found: no record exists with id='{doc_id}'. "
+                        "Please verify the ID and try again."
+                    ),
+                    data=None,
+                )
+
+            # ----------------------------------------------------------------
+            # Case 2 — document found: map ALL columns to the dataclass
+            # ----------------------------------------------------------------
+            # Using explicit field mapping (instead of **dict(row)) ensures that:
+            #   a) type coercions are applied correctly (e.g. bool for is_last)
+            #   b) OCR status fields are always included, even on older DB schemas
+            #      where _row_to_document() in db.py may not yet cover them.
+            document = StoredDocument(
+                # -- Identity --------------------------------------------------
+                id=row["id"],
+                file_url=row["file_url"],
+
+                # -- Scraped metadata ------------------------------------------
+                title=row["title"],
+                document_type=row["document_type"],
+                issuing_entity=row["issuing_entity"],
+                document_number=row["document_number"],
+                year=row["year"],
+                date=row["date"],
+                language=row["language"],
+                category=row["category"],
+                subcategory=row["subcategory"],
+
+                # -- Storage fields --------------------------------------------
+                sha256_hash=row["sha256_hash"],
+                version=row["version"],
+                is_last=bool(row["is_last"]),
+                file_path=row["file_path"],
+                file_size_bytes=row["file_size_bytes"],
+                download_status=row["download_status"],
+                created_at=row["created_at"],
+
+                # -- OCR status fields -----------------------------------------
+                ocr_status=row["ocr_status"],
+                ocr_processed_at=row["ocr_processed_at"],
+                retry_count=row["retry_count"],
+            )
+
+            return StorageResult(
+                success=True,
+                message=(
+                    f"Document retrieved successfully: id='{doc_id}' "
+                    f"(version={document.version}, "
+                    f"ocr_status='{document.ocr_status}')."
+                ),
+                data=document,
+            )
+
+        # --------------------------------------------------------------------
+        # Case 3 — database-level error (connection issue, corrupted schema…)
+        # --------------------------------------------------------------------
+        except sqlite3.Error as exc:
+            logger.error(
+                "[MetadataStore.get_document_by_id] Database error while retrieving "
+                "doc_id='%s': %s",
+                doc_id,
+                exc,
+                exc_info=True,
+            )
             return StorageResult(
                 success=False,
-                message=f"No document found with id={document_id}.",
+                message=(
+                    f"Database error while retrieving document id='{doc_id}': {exc}"
+                ),
+                data=None,
             )
-        return StorageResult(
-            success=True,
-            message=f"Found document id={document_id} (version {doc.version}).",
-            data=doc,
-        )
 
     def get_latest_document_by_url(self, file_url: str) -> StorageResult:
         """
@@ -641,6 +749,49 @@ class MetadataStore:
             data=docs,
         )
 
+    def get_documents_by_filter(
+        self,
+        category: str,
+        subcategory: Optional[str] = None,
+        title: Optional[str] = None,
+        is_last: Optional[bool] = None,
+    ) -> list[StoredDocument]:
+        """
+        High-level interface to retrieve documents by classification metadata.
+        
+        Args:
+            category: The document category (e.g., 'banking', 'compliance'). REQUIRED.
+            subcategory: Optional specific subcategory.
+            title: Optional partial title match.
+            is_last: Optional filter for latest version only (True) or historical (False).
+            
+        Returns:
+            A list of StoredDocument objects matching the criteria.
+            
+        Raises:
+            ValueError: If no documents are found matching the criteria.
+        """
+        docs = get_documents_by_custom_filter(
+            db_path=self.db_path,
+            category=category,
+            subcategory=subcategory,
+            title=title,
+            is_last=is_last
+        )
+
+        if not docs:
+            error_msg = f"No documents found matching the criteria. Category: '{category}'"
+            if subcategory:
+                error_msg += f", Subcategory: '{subcategory}'"
+            if title:
+                error_msg += f", Title: '{title}'"
+            if is_last is not None:
+                error_msg += f", is_last: {is_last}"
+            
+            raise ValueError(error_msg)
+
+        return docs
+
     def check_document_exists(self, file_url: str = None, sha256_hash: str = None) -> StorageResult:
         """
         Check if a document already exists by URL or hash (or both).
@@ -746,6 +897,7 @@ class MetadataStore:
                     "issuing_entity": d.issuing_entity,
                     "document_number": d.document_number, "year": d.year,
                     "date": d.date, "language": d.language,
+                    "category": d.category, "subcategory": d.subcategory,
                     "file_path": d.file_path,
                     "file_size_bytes": d.file_size_bytes,
                 }
@@ -793,6 +945,7 @@ class MetadataStore:
                     "issuing_entity": d.issuing_entity,
                     "document_number": d.document_number, "year": d.year,
                     "date": d.date, "language": d.language,
+                    "category": d.category, "subcategory": d.subcategory,
                     "file_path": d.file_path, "file_size_bytes": d.file_size_bytes,
                 }
                 for d in docs
@@ -1153,7 +1306,7 @@ class MetadataStore:
         except Exception as e:
             return StorageResult(success=False, message=f"Search failed: {str(e)}")
 
-    def delete_chunks_by_document(self, doc_id: int) -> StorageResult:
+    def delete_chunks_by_document(self, doc_id: str) -> StorageResult:
         """
         Manually clear chunks for a document (e.g., if you want to re-run OCR).
         Note: This is also handled by ON DELETE CASCADE if the document itself is deleted.
@@ -1191,7 +1344,7 @@ class MetadataStore:
         except Exception as e:
             return StorageResult(success=False, message=f"Reset chunks failed: {e}")
 
-    def get_next_version_number(self, doc_id: int) -> int:
+    def get_next_version_number(self, doc_id: str) -> int:
             """
             Calculates the next version number for a document's chunks by finding the 
             current maximum version and incrementing it.
@@ -1212,7 +1365,7 @@ class MetadataStore:
                 # Default to version 1 if any database error occurs during check
                 return 1
 
-    def archive_old_chunks(self, doc_id: int) -> None:
+    def archive_old_chunks(self, doc_id: str) -> None:
             """
             Soft-deletes existing chunks for a document by setting 'is_active' to 0.
             This preserves historical data for comparison while ensuring only the 
@@ -1243,16 +1396,17 @@ class MetadataStore:
                 # Updated Query to include Diff Results
                 query = """
                     INSERT INTO document_chunks (
-                        doc_id, chunk_index, content, bbox, 
+                        doc_id, chunk_id, chunk_index, content, bbox, 
                         page_number, chunk_hash, is_active, version, 
                         created_at, change_type, old_content
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 
                 try:
                     data_to_insert = [
                         (
                             c.get('doc_id'), 
+                            c.get('chunk_id'), # New deterministic ID
                             c.get('chunk_index'), 
                             c.get('content'), 
                             c.get('bbox'), 
@@ -1279,13 +1433,13 @@ class MetadataStore:
                 except Exception as e:
                     return StorageResult(success=False, message=f"Failed to save chunks: {str(e)}")
 
-    def get_chunks_by_version(self, doc_id: int, version: int) -> List[Dict[str, Any]]:
+    def get_chunks_by_version(self, doc_id: str, version: int) -> List[Dict[str, Any]]:
         """
         Retrieves all chunks belonging to a specific version of a document.
         Useful for auditing or restoring old data.
         """
         query = """
-            SELECT chunk_index, content, bbox, page_number, chunk_hash, 
+            SELECT chunk_id, chunk_index, content, bbox, page_number, chunk_hash, 
                    is_active, version, created_at, change_type, old_content
             FROM document_chunks 
             WHERE doc_id = ? AND version = ?
@@ -1300,13 +1454,13 @@ class MetadataStore:
             print(f"[!] Error retrieving chunks by version: {e}")
             return []
 
-    def get_latest_chunks(self, doc_id: int) -> List[Dict[str, Any]]:
+    def get_latest_chunks(self, doc_id: str) -> List[Dict[str, Any]]:
         """
         Retrieves the current active (latest) chunks for a document.
         This is used in the OCR Pipeline to provide a base for comparison (Diff).
         """
         query = """
-            SELECT chunk_index, content, bbox, page_number, chunk_hash, 
+            SELECT chunk_id, chunk_index, content, bbox, page_number, chunk_hash, 
                    is_active, version, created_at
             FROM document_chunks 
             WHERE doc_id = ? AND is_active = 1
@@ -1323,13 +1477,13 @@ class MetadataStore:
 
 
  ### FOR LLM USAGE 
-    def get_active_chunks(self, doc_id: int) -> List[Dict[str, Any]]:
+    def get_active_chunks(self, doc_id: str) -> List[Dict[str, Any]]:
         """
         Retrieves only the most recent (active) chunks for a document.
         Used for standard RAG/Question-Answering.
         """
         query = """
-            SELECT chunk_index, content, page_number, chunk_hash
+            SELECT chunk_id, chunk_index, content, page_number, chunk_hash
             FROM document_chunks 
             WHERE doc_id = ? AND is_active = 1
             ORDER BY chunk_index ASC
@@ -1339,7 +1493,7 @@ class MetadataStore:
             cursor = conn.execute(query, (doc_id,))
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_chunk_history(self, doc_id: int, chunk_index: int) -> List[Dict[str, Any]]:
+    def get_chunk_history(self, doc_id: str, chunk_index: int) -> List[Dict[str, Any]]:
         """
         Retrieves all historical versions of a specific chunk.
         Allows the LLM to explain what changed between versions.
@@ -1355,7 +1509,7 @@ class MetadataStore:
             cursor = conn.execute(query, (doc_id, chunk_index))
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_version_changes(self, doc_id: int, version: int) -> List[Dict[str, Any]]:
+    def get_version_changes(self, doc_id: str, version: int) -> List[Dict[str, Any]]:
         """
         Retrieves only the modified or added chunks for a specific version.
         Used for generating 'What's New' summaries via LLM.

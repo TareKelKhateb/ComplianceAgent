@@ -40,6 +40,9 @@ class DiffEngine:
                 b_match = base_hashes[t_hash]
                 matched_base_hashes.add(t_hash)
                 
+                # Carry over version and previous metadata
+                t_chunk['version'] = b_match.get('version', 1)
+                
                 if b_match['chunk_index'] == t_idx:
                     t_chunk['change_type'] = 'unchanged'
                 else:
@@ -59,9 +62,11 @@ class DiffEngine:
                     t_chunk['change_type'] = 'modified'
                     t_chunk['old_content'] = b_at_idx['content']
                     t_chunk['old_hash'] = b_at_idx['chunk_hash']
+                    t_chunk['version'] = b_at_idx.get('version', 0) + 1
                 else:
                     # Position didn't exist before -> Addition
                     t_chunk['change_type'] = 'added'
+                    t_chunk['version'] = 1 # Start at version 1 for new provisions
 
             final_report.append(t_chunk)
 

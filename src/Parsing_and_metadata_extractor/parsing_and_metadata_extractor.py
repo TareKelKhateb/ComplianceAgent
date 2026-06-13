@@ -19,10 +19,15 @@ import logging
 import os
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # pyrefly: ignore [missing-import]
 from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
@@ -91,6 +96,10 @@ class ParsingMetaDataExtractor:
 
         # Storage layer (source of truth — never modified here)
         self.metadata_store = metadata_store or MetadataStore()
+
+        # Thread synchronization locks for concurrency safety
+        self.db_lock = threading.Lock()
+        self.git_dvc_lock = threading.Lock()
 
     # =========================================================================
     # STEP 1 — Fetch raw metadata from the scraper microservice
@@ -1543,8 +1552,152 @@ class ParsingMetaDataExtractor:
         self.metadata_store.reset_all_data()
 
     # ------------------------------------------------------------------------------------------------------
-    # ## General Pipeline For Local Files & Remote URLs
+    # ## General Pipeline For Local Files & Remote URLs (Parallelized)
     # ------------------------------------------------------------------------------------------------------
+
+    def _process_single_document_worker(
+        self,
+        doc_dict: dict,
+        save_dir: str,
+        push_to_dagshub: bool,
+    ) -> dict:
+        """
+        Worker task to process a single document.
+        Downloads, hashes, and updates DB (under self.db_lock), then pushes to DagsHub (under self.git_dvc_lock).
+        Returns a dict of stat increments to be aggregated by the main thread.
+        """
+        worker_stats = {"new": 0, "updated": 0, "skipped": 0, "failed": 0,
+                        "pushed": 0, "push_failed": 0}
+        title = doc_dict.get("title", "Unknown Title")
+        file_url = doc_dict.get("file_url")
+        
+        # Local file staging keys
+        local_path = doc_dict.get("local_path")
+        pdf_name = doc_dict.get("pdf_name")
+
+        self.logger.info("📄 Processing: %s", title)
+
+        try:
+            if not file_url:
+                self.logger.warning("⚠️ [SKIP] No file_url found for '%s'.", title)
+                worker_stats["skipped"] += 1
+                return worker_stats
+
+            pdf_bytes = None
+            final_file_path = ""
+
+            # ---- Step 3a: Check Local Path First --------------------
+            if local_path and pdf_name:
+                potential_path = os.path.join(local_path, pdf_name)
+                if os.path.exists(potential_path):
+                    self.logger.info("🏠 [LOCAL] File found at %s. Skipping download.", potential_path)
+                    try:
+                        with open(potential_path, "rb") as f:
+                            pdf_bytes = f.read()
+                        final_file_path = potential_path
+                    except Exception as e:
+                        self.logger.error("❌ [FAIL] Could not read local file %s: %s", potential_path, e)
+
+            # ---- Step 3b: Fallback to Download ----------------------
+            if not pdf_bytes:
+                safe_name = title.replace(" ", "_").replace("/", "-").replace("\\", "-")
+                if not safe_name.endswith(".pdf"):
+                    safe_name += ".pdf"
+                    
+                pdf_bytes = self.download_pdf(
+                    file_url=file_url,
+                    file_name=safe_name,
+                    save_directory=save_dir,
+                )
+                final_file_path = os.path.join(save_dir, safe_name)
+
+            if not pdf_bytes:
+                self.logger.error("❌ [FAIL] Source acquisition failed for '%s'. Skipping.", title)
+                worker_stats["failed"] += 1
+                return worker_stats
+
+            # ---- Step 3c: Hash -------------------------------------
+            new_hash = self.calculate_hash(file_content=pdf_bytes)
+            if not new_hash:
+                worker_stats["failed"] += 1
+                return worker_stats
+
+            # Build Payload (preserving 'id', 'category', 'subcategory' to prevent constraint violations)
+            insert_payload = {
+                "id": doc_dict.get("id"),
+                "file_url": file_url,
+                "sha256_hash": new_hash,
+                "is_last": True,
+                "title": title,
+                "document_type": doc_dict.get("document_type"),
+                "issuing_entity": doc_dict.get("issuing_entity"),
+                "document_number": doc_dict.get("document_number"),
+                "year": doc_dict.get("year"),
+                "date": doc_dict.get("date"),
+                "language": doc_dict.get("language"),
+                "category": doc_dict.get("category"),
+                "subcategory": doc_dict.get("subcategory"),
+                "file_path": final_file_path,
+                "file_size_bytes": len(pdf_bytes),
+                "download_status": "downloaded",
+            }
+
+            # ---- Step 3d: DB operations under self.db_lock -----------
+            with self.db_lock:
+                exist_result = self.does_document_exist(file_url=file_url)
+                if not exist_result.success:
+                    worker_stats["failed"] += 1
+                    return worker_stats
+
+                document_exists = bool(exist_result.data)
+
+                if document_exists:
+                    self.logger.info("🗃️ Record found. Checking hash...")
+                    meta_result = self.fetch_existing_metadata(file_url=file_url)
+                    
+                    if not meta_result.success or meta_result.data is None:
+                        worker_stats["failed"] += 1
+                        return worker_stats
+
+                    stored_doc = meta_result.data
+                    if self.has_file_changed(new_hash, stored_doc.sha256_hash):
+                        self.logger.info("⬆️ [UPDATE] Content changed.")
+                        self.update_old_version(pdf_url=file_url, fields={"is_last": False})
+                        store_result = self.store_new_version(insert_payload)
+                        if store_result.success:
+                            worker_stats["updated"] += 1
+                            should_push = True
+                        else:
+                            worker_stats["failed"] += 1
+                            should_push = False
+                    else:
+                        self.logger.info("🔄 [SKIP] Up-to-date: '%s'", title)
+                        worker_stats["skipped"] += 1
+                        should_push = False
+                else:
+                    self.logger.info("➕ [NEW] Inserting version 1...")
+                    store_result = self.store_new_version(insert_payload)
+                    if store_result.success:
+                        worker_stats["new"] += 1
+                        should_push = True
+                    else:
+                        worker_stats["failed"] += 1
+                        should_push = False
+
+            # ---- Step 3e: Push to DagsHub under self.git_dvc_lock ----
+            if should_push and push_to_dagshub:
+                with self.git_dvc_lock:
+                    pushed = self.push_to_dagshub(final_file_path, file_url, new_hash)
+                    if pushed:
+                        worker_stats["pushed"] += 1
+                    else:
+                        worker_stats["push_failed"] += 1
+
+        except Exception as exc:
+            self.logger.exception("💥 [UNHANDLED] Error processing '%s': %s", title, exc)
+            worker_stats["failed"] += 1
+
+        return worker_stats
 
     def process_pipeline_general(
         self,
@@ -1554,11 +1707,17 @@ class ParsingMetaDataExtractor:
         save_directory: Optional[str] = None,
         scraped_data: Optional[list] = None,
         push_to_dagshub: bool = True,
+        max_workers: Optional[int] = None,
     ) -> dict:
         """
         Generalized end-to-end ingestion pipeline supporting both 
-        remote downloads and pre-existing local files.
+        remote downloads and pre-existing local files, using thread-pool
+        parallelism for massive performance gains.
         """
+        if max_workers is None:
+            env_val = os.getenv("MAX_WORKERS")
+            max_workers = int(env_val) if env_val else 4
+
         save_dir = save_directory or self.temp_download_dir
         stats = {"new": 0, "updated": 0, "skipped": 0, "failed": 0,
                  "pushed": 0, "push_failed": 0}
@@ -1572,7 +1731,7 @@ class ParsingMetaDataExtractor:
                 self.logger.error("❌ No target_url and no scraped_data. Halted.")
                 return stats
             raw_data = self.fetch_incoming_data(url=target_url, is_crawl=is_crawl, limit=limit)
-
+                
         if not raw_data:
             self.logger.warning("🚫 No data available. Pipeline halted.")
             return stats
@@ -1582,119 +1741,31 @@ class ParsingMetaDataExtractor:
         total_docs = sum(len(g) for g in document_groups)
         self.logger.info("📋 Processing %d document(s) across %d group(s).", total_docs, len(document_groups))
 
-        # --- Step 3: Process documents ---
-        for group_idx, document_group in enumerate(document_groups, start=1):
-            for doc_dict in document_group:
-                title = doc_dict.get("title", "Unknown Title")
-                file_url = doc_dict.get("file_url")
-                
-                # New keys for local processing
-                local_path = doc_dict.get("local_path")
-                pdf_name = doc_dict.get("pdf_name")
+        # Flatten the groups for direct ingestion by the ThreadPoolExecutor
+        flat_docs = []
+        for document_group in document_groups:
+            flat_docs.extend(document_group)
 
-                self.logger.info("📄 Processing: %s", title)
-
+        self.logger.info("⚡ Executing ingestion pipeline in parallel (max_workers=%d)...", max_workers)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(
+                    self._process_single_document_worker,
+                    doc_dict=doc,
+                    save_dir=save_dir,
+                    push_to_dagshub=push_to_dagshub,
+                )
+                for doc in flat_docs
+            ]
+            
+            for future in futures:
                 try:
-                    if not file_url:
-                        self.logger.warning("⚠️ [SKIP] No file_url found for '%s'.", title)
-                        stats["skipped"] += 1
-                        continue
-
-                    pdf_bytes = None
-                    final_file_path = ""
-
-                    # ---- Step 3a: Check Local Path First --------------------
-                    if local_path and pdf_name:
-                        potential_path = os.path.join(local_path, pdf_name)
-                        print(f"DEBUG: I am looking for the file exactly here: {os.path.abspath(potential_path)}") 
-                        if os.path.exists(potential_path):
-                            self.logger.info("🏠 [LOCAL] File found at %s. Skipping download.", potential_path)
-                            try:
-                                with open(potential_path, "rb") as f:
-                                    pdf_bytes = f.read()
-                                final_file_path = potential_path
-                            except Exception as e:
-                                self.logger.error("❌ [FAIL] Could not read local file %s: %s", potential_path, e)
-
-                    # ---- Step 3b: Fallback to Download ----------------------
-                    if not pdf_bytes:
-                        safe_name = title.replace(" ", "_").replace("/", "-").replace("\\", "-")
-                        if not safe_name.endswith(".pdf"):
-                            safe_name += ".pdf"
-                            
-                        pdf_bytes = self.download_pdf(
-                            file_url=file_url,
-                            file_name=safe_name,
-                            save_directory=save_dir,
-                        )
-                        final_file_path = os.path.join(save_dir, safe_name)
-
-                    if not pdf_bytes:
-                        self.logger.error("❌ [FAIL] Source acquisition failed for '%s'. Skipping.", title)
-                        stats["failed"] += 1
-                        continue
-
-                    # ---- Step 3c: Hash -------------------------------------
-                    new_hash = self.calculate_hash(file_content=pdf_bytes)
-                    if not new_hash:
-                        stats["failed"] += 1
-                        continue
-
-                    # Build Payload
-                    insert_payload = {
-                        "file_url": file_url,
-                        "sha256_hash": new_hash,
-                        "is_last": True,
-                        "title": title,
-                        "document_type": doc_dict.get("document_type"),
-                        "issuing_entity": doc_dict.get("issuing_entity"),
-                        "document_number": doc_dict.get("document_number"),
-                        "year": doc_dict.get("year"),
-                        "date": doc_dict.get("date"),
-                        "language": doc_dict.get("language"),
-                        "file_path": final_file_path,
-                        "file_size_bytes": len(pdf_bytes),
-                        "download_status": "downloaded",
-                    }
-
-                    # ---- Step 3d: DB existence & Versioning ----------------
-                    exist_result = self.does_document_exist(file_url=file_url)
-                    if not exist_result.success:
-                        stats["failed"] += 1
-                        continue
-
-                    if bool(exist_result.data):
-                        self.logger.info("🗃️ Record found. Checking hash...")
-                        meta_result = self.fetch_existing_metadata(file_url=file_url)
-                        
-                        if not meta_result.success or meta_result.data is None:
-                            stats["failed"] += 1
-                            continue
-
-                        stored_doc = meta_result.data
-                        if self.has_file_changed(new_hash, stored_doc.sha256_hash):
-                            self.logger.info("⬆️ [UPDATE] Content changed.")
-                            self.update_old_version(pdf_url=file_url, fields={"is_last": False})
-                            store_result = self.store_new_version(insert_payload)
-                            if store_result.success:
-                                stats["updated"] += 1
-                                if push_to_dagshub:
-                                    pushed = self.push_to_dagshub(final_file_path, file_url, new_hash)
-                                    stats["pushed" if pushed else "push_failed"] += 1
-                        else:
-                            self.logger.info("🔄 [SKIP] Up-to-date: '%s'", title)
-                            stats["skipped"] += 1
-                    else:
-                        self.logger.info("➕ [NEW] Inserting version 1...")
-                        store_result = self.store_new_version(insert_payload)
-                        if store_result.success:
-                            stats["new"] += 1
-                            if push_to_dagshub:
-                                pushed = self.push_to_dagshub(final_file_path, file_url, new_hash)
-                                stats["pushed" if pushed else "push_failed"] += 1
-
-                except Exception as exc:
-                    self.logger.exception("💥 [UNHANDLED] Error processing '%s': %s", title, exc)
+                    result_stats = future.result()
+                    for k, v in result_stats.items():
+                        stats[k] += v
+                except Exception as e:
+                    self.logger.error("💥 Critical thread failure processing document task: %s", e)
                     stats["failed"] += 1
 
         return stats

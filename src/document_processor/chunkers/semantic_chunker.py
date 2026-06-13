@@ -1,7 +1,7 @@
 import logging
 import re
 import unicodedata
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -18,7 +18,7 @@ class ChunkMetadata(BaseModel):
 
     type: str  # 'preamble' | 'article'
     header: Optional[str] = None
-    article_number: Optional[int] = None
+    article_number: Optional[Union[int, str]] = None
     word_count: int = 0
     language: str = "en"
 
@@ -26,7 +26,7 @@ class ChunkMetadata(BaseModel):
 class Chunk(BaseModel):
     """A single document chunk produced by the SemanticChunker."""
 
-    doc_id: int
+    doc_id: Union[int, str]
     chunk_index: int
     content: str
     metadata: ChunkMetadata
@@ -36,19 +36,57 @@ class Chunk(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Matches "Article 5", "### المادة 12", etc. and extracts the number.
-_ARTICLE_NUMBER_RE = re.compile(
-    r"(?:Article|المادة|مادة)\s+(\d+)", re.IGNORECASE
+# Matches Arabic article headers: "### المادة 12", "ماده (٦)", etc.
+_ARABIC_ARTICLE_NUMBER_RE = re.compile(
+    r"(?:الماد[ةه]|ماد[ةه])\s*\(?\s*([0-9\u0660-\u0669]+)\)?",
+    re.IGNORECASE,
 )
+
+# Matches English article headers in multiple formats:
+#   "Article 5"  |  "Article (4)"  |  "(Article 1)"  |  "## Article 1 Some title"
+_ENGLISH_ARTICLE_NUMBER_RE = re.compile(
+    r"\(?\s*Article\s*\(?\s*(\d+)\s*\)?",
+    re.IGNORECASE,
+)
+
+# Combined convenience alias used by _extract_article_number
+_ARTICLE_NUMBER_RE = re.compile(
+    r"(?:Article|الماد[ةه]|ماد[ةه])\s*\(?\s*([0-9\u0660-\u0669\w]+)\)?",
+    re.IGNORECASE,
+)
+
 
 # Detects Arabic Unicode characters.
 _ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+")
 
 
-def _extract_article_number(header: str) -> Optional[int]:
-    """Return the numeric article number from *header*, or ``None``."""
-    m = _ARTICLE_NUMBER_RE.search(header)
-    return int(m.group(1)) if m else None
+def _extract_article_number(header: str) -> Optional[Union[int, str]]:
+    """Return the numeric article number from *header*, or ``None``.
+
+    Resolution order:
+    1. Arabic patterns  (e.g. ``مادة (٦)``  or  ``المادة 12``)
+    2. English patterns (e.g. ``Article 5``, ``Article (4)``, ``(Article 1)``)
+    """
+    # -- Arabic first (preserves existing behaviour) -----------------------
+    m = _ARABIC_ARTICLE_NUMBER_RE.search(header)
+    if m:
+        raw = m.group(1)
+        # Convert Eastern-Arabic digits to Western digits
+        eastern = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        try:
+            return int(raw.translate(eastern))
+        except ValueError:
+            return raw
+
+    # -- English next -------------------------------------------------------
+    m = _ENGLISH_ARTICLE_NUMBER_RE.search(header)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return m.group(1)
+
+    return None
 
 
 def _detect_language(header: str) -> str:
@@ -124,7 +162,7 @@ class SemanticChunker(BaseChunker):
     # BaseChunker contract
     # ------------------------------------------------------------------
 
-    def create_chunks(self, full_text: str, doc_id: int) -> List[dict]:
+    def create_chunks(self, full_text: str, doc_id: str) -> List[dict]:
         """
         Split *full_text* on article headers.
 
@@ -147,12 +185,12 @@ class SemanticChunker(BaseChunker):
                 "full_text must be a non-empty string, "
                 f"got {type(full_text).__name__!r}: {full_text!r}"
             )
-        if not isinstance(doc_id, int) or doc_id <= 0:
+        if not isinstance(doc_id, (int, str)):
             raise ValueError(
-                f"doc_id must be a positive integer, got {doc_id!r}"
+                f"doc_id must be an integer or string, got {type(doc_id).__name__!r}: {doc_id!r}"
             )
 
-        logger.debug("SemanticChunker: Splitting doc_id=%d on article headers…", doc_id)
+        logger.debug("SemanticChunker: Splitting doc_id=%s on article headers…", doc_id)
 
         # ------------------------------------------------------------------
         # 2. Page-separator cleanup (hardened regex from config)
