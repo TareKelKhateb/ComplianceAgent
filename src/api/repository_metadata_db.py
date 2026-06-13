@@ -171,34 +171,46 @@ def _combo_exists(
 # ---------------------------------------------------------------------------
 
 def _do_insert(conn: sqlite3.Connection, doc_in: DocumentCreate) -> SimpleNamespace:
-    doc_id   = _gen_doc_id(doc_in.title)
-    sha256   = _placeholder_hash(doc_in.title, doc_in.file_url)
-    now      = _now_iso()
-    file_url = doc_in.file_url or f"local://{doc_id}"
+    # Generate the text hash strictly for fallback URLs, do not insert into 'id'
+    fallback_hash = _gen_doc_id(doc_in.title)
+    sha256 = _placeholder_hash(doc_in.title, doc_in.file_url)
+    now = _now_iso()
+    file_url = doc_in.file_url or f"local://{fallback_hash}"
     date_str = doc_in.document_date.isoformat() if doc_in.document_date else None
-    year_str = str(doc_in.year) if doc_in.year is not None else None
+    
+    # Pass the year as an integer to avoid Strict mode mismatches
+    year_val = doc_in.year
 
-    conn.execute(
+    cursor = conn.cursor()
+    
+    # 1. Removed 'id' from columns and removed the first '?' from VALUES
+    cursor.execute(
         """
         INSERT INTO documents (
-            id, file_url, sha256_hash, created_at,
+            file_url, sha256_hash, created_at,
             title, document_type, issuing_entity, document_number,
             year, date, language, category, subcategory,
             file_path, download_status, version, is_last
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, 1)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, 1)
         """,
         (
-            doc_id, file_url, sha256, now,
+            file_url, sha256, now,
             doc_in.title, doc_in.document_type, doc_in.issuing_entity,
-            doc_in.document_number, year_str, date_str, doc_in.language,
+            doc_in.document_number, year_val, date_str, doc_in.language,
             doc_in.category, doc_in.subcategory, doc_in.local_path,
         ),
     )
     conn.commit()
 
+    # 2. Capture the newly generated auto-increment integer ID
+    inserted_id = cursor.lastrowid
+
+    # 3. Fetch using rowid (which maps perfectly to the integer id)
     row = conn.execute(
-        "SELECT rowid AS int_id, * FROM documents WHERE id = ? LIMIT 1", (doc_id,)
+        "SELECT rowid AS int_id, * FROM documents WHERE rowid = ? LIMIT 1", 
+        (inserted_id,)
     ).fetchone()
+    
     return _row_to_ns(row)
 
 
