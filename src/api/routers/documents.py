@@ -5,7 +5,7 @@ from typing import List
 from datetime import datetime
 
 # Import the new abstraction layer
-from .. import repository 
+from .. import repository_metadata_db as repository 
 
 from ..schemas import (
     DocumentCreate, DocumentResponse, DocumentUpdate, 
