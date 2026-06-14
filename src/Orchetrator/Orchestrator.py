@@ -188,7 +188,7 @@ class Orchestrator:
 
         logger.info("Initialising Parsing & Metadata Extractor…")
         self._parsing_extractor = ParsingMetaDataExtractor(metadata_store=self._store)
-        self._parsing_extractor.reset_metadate()
+        # self._parsing_extractor.reset_metadate()
 
         logger.info("Initialising OCR Pipeline…")
         self._ocr_pipeline = OCRPipeline(metadata_store=self._store)
@@ -248,8 +248,39 @@ class Orchestrator:
         logger.info("OCR stage completed successfully.")
 
     # ------------------------------------------------------------------
-    # Public entry point
+    # Public entry points
     # ------------------------------------------------------------------
+
+    def run_with_data(self, records: list[dict]) -> None:
+        """
+        Execute the pipeline with externally-provided (user-approved) records.
+
+        This is the integration point for the User Adjustments API.
+        Skips the simulated scraper/UI stage and proceeds directly to
+        ingestion (Stage 3) and OCR (Stage 4).
+
+        Parameters
+        ----------
+        records : list[dict]
+            Metadata records that have been reviewed and approved by the user.
+        """
+        logger.info("=" * 60)
+        logger.info("STARTING PIPELINE WITH PRE-APPROVED DATA (%d records)", len(records))
+        logger.info("=" * 60)
+
+        if not records:
+            logger.error("Aborting: no records provided.")
+            return
+
+        # Stage 3 — ingest & hash-diff
+        self._stage_ingest(records)
+
+        # Stage 4 — OCR & chunking for changed documents
+        self._stage_ocr()
+
+        logger.info("=" * 60)
+        logger.info("PIPELINE WITH PRE-APPROVED DATA FINISHED")
+        logger.info("=" * 60)
 
     def run(self) -> None:
         """Execute a full orchestration cycle (all pipeline stages in order)."""
