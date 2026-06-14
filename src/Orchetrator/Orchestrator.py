@@ -36,6 +36,8 @@ from src.metadata_manager.metadata_store import MetadataStore
 from src.Parsing_and_metadata_extractor.parsing_and_metadata_extractor import ParsingMetaDataExtractor
 from src.document_processor.pipeline_manager import OCRPipeline
 from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
+import requests
+from src.Orchetrator.email_sender import send_review_email
 
 # ---------------------------------------------------------------------------
 # Logging — coloured console output (stdlib only, no extra packages)
@@ -219,8 +221,9 @@ class Orchestrator:
         Whether to push ingested metadata to DagsHub after processing.
     """
 
-    def __init__(self, *, push_to_dagshub: bool = False) -> None:
+    def __init__(self, *, push_to_dagshub: bool = False, use_adjustments: bool = True) -> None:
         self.push_to_dagshub = push_to_dagshub
+        self.use_adjustments = use_adjustments
 
         logger.info("Initialising shared metadata store…")
         self._store = MetadataStore()
@@ -362,6 +365,44 @@ class Orchestrator:
         if not records:
             logger.error("Aborting orchestration cycle: no records to process.")
             return
+
+        if self.use_adjustments:
+            logger.info("Creating a metadata review session on the User Adjustments API…")
+            api_url = os.getenv("USER_ADJUSTMENTS_API_URL", "http://localhost:8080")
+            # Ensure documents payload is exactly list[list[dict]] (2D list)
+            if records and isinstance(records[0], list):
+                documents_payload = records
+            else:
+                documents_payload = [records]
+            payload = {"documents": documents_payload}
+            
+            try:
+                response = requests.post(f"{api_url}/api/sessions", json=payload, timeout=15)
+                response.raise_for_status()
+                session_data = response.json()
+                
+                session_id = session_data["session_id"]
+                review_url = f"{api_url.rstrip('/')}{session_data['review_url']}"
+                
+                logger.info("Successfully created review session: %s", session_id)
+                logger.info("Review link: %s", review_url)
+                
+                # Send email containing this review_url
+                send_review_email(review_url)
+                
+                logger.info("=" * 60)
+                logger.info("ORCHESTRATION PAUSED — AWAITING HUMAN REVIEW & APPROVAL")
+                logger.info("=" * 60)
+                return
+            except requests.exceptions.ConnectionError:
+                logger.error(
+                    "Cannot reach the User Adjustments API at '%s'. "
+                    "Make sure the FastAPI server is running (`python -m src.user_adjustments_apis.api.run_server`). "
+                    "Falling back to immediate ingestion…",
+                    api_url
+                )
+            except Exception as exc:
+                logger.error("Failed to create review session: %s. Falling back to immediate ingestion…", exc)
 
         # Stage 3 — ingest & hash-diff
         self._stage_ingest(records)

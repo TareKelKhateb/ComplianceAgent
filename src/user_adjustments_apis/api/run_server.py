@@ -34,7 +34,7 @@ def main() -> None:
     uvicorn.run(
         "src.user_adjustments_apis.api.app:app",
         host="0.0.0.0",
-        port=8000,
+        port=8080,
         reload=True,
         reload_dirs=[os.path.join(_ROOT, "src")],
     )
