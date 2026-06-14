@@ -35,6 +35,7 @@ if project_root not in sys.path:
 from src.metadata_manager.metadata_store import MetadataStore
 from src.Parsing_and_metadata_extractor.parsing_and_metadata_extractor import ParsingMetaDataExtractor
 from src.document_processor.pipeline_manager import OCRPipeline
+from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
 
 # ---------------------------------------------------------------------------
 # Logging — coloured console output (stdlib only, no extra packages)
@@ -111,6 +112,44 @@ def _setup_logging(level: int = logging.INFO) -> None:
 
 _setup_logging()
 logger = logging.getLogger("Orchestrator")
+
+
+# ---------------------------------------------------------------------------
+# Live Scraper Integration
+# ---------------------------------------------------------------------------
+
+def scrape_live_data(url: str, is_crawl: bool = False, limit: int = 1) -> list[dict]:
+    """
+    Call the live Scrapper microservice to extract document metadata from a target URL.
+
+    Parameters
+    ----------
+    url : str
+        The web page (or site root) to scrape / crawl.
+    is_crawl : bool
+        Whether to crawl the site.
+    limit : int
+        Maximum number of pages to crawl when is_crawl is True.
+
+    Returns
+    -------
+    list[dict]
+        Raw document metadata records.
+    """
+    logger.info("Starting live scraping from: %s (crawl=%s, limit=%d)", url, is_crawl, limit)
+    client = ScrapperClient()
+    try:
+        data = client.extract_data(url=url, is_crawl=is_crawl, limit=limit)
+        if not data:
+            logger.warning("Live scraping yielded 0 records.")
+            return []
+        logger.info("Live scraping successful: fetched %d record(s).", len(data))
+        return data
+    except ScrapperClientError as exc:
+        logger.error("ScrapperClientError during live scraping: %s", exc)
+        return []
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -197,11 +236,25 @@ class Orchestrator:
     # Private stage methods — each maps to one pipeline stage
     # ------------------------------------------------------------------
 
-    def _stage_acquire(self) -> list[dict]:
-        """Stage 2: return user-adjusted (or simulated) metadata records."""
-        records = simulate_user_adjustments()
+    def _stage_acquire(
+        self,
+        url: str | None = None,
+        is_crawl: bool = False,
+        limit: int = 1,
+    ) -> list[dict]:
+        """
+        Stage 2: Acquire metadata records.
+
+        If a target URL is supplied, calls the live Scraper microservice.
+        Otherwise, falls back to simulated/mock user adjustments.
+        """
+        if url:
+            records = scrape_live_data(url=url, is_crawl=is_crawl, limit=limit)
+        else:
+            records = simulate_user_adjustments()
+
         if not records:
-            logger.error("No metadata records available after user-adjustment stage.")
+            logger.error("No metadata records available after acquire stage.")
         else:
             logger.info("Acquired %d metadata record(s) for ingestion.", len(records))
         return records
@@ -282,14 +335,30 @@ class Orchestrator:
         logger.info("PIPELINE WITH PRE-APPROVED DATA FINISHED")
         logger.info("=" * 60)
 
-    def run(self) -> None:
-        """Execute a full orchestration cycle (all pipeline stages in order)."""
+    def run(
+        self,
+        url: str | None = None,
+        is_crawl: bool = False,
+        limit: int = 1,
+    ) -> None:
+        """
+        Execute a full orchestration cycle (all pipeline stages in order).
+
+        Parameters
+        ----------
+        url : str, optional
+            The URL to scrape. If not provided, simulated metadata is loaded.
+        is_crawl : bool
+            Whether to crawl multiple pages when scraping.
+        limit : int
+            Crawl page limit.
+        """
         logger.info("=" * 60)
         logger.info("STARTING PIPELINE ORCHESTRATION CYCLE")
         logger.info("=" * 60)
 
-        # Stage 2 — acquire (simulated until real scraper / UI is wired)
-        records = self._stage_acquire()
+        # Stage 2 — acquire
+        records = self._stage_acquire(url=url, is_crawl=is_crawl, limit=limit)
         if not records:
             logger.error("Aborting orchestration cycle: no records to process.")
             return

@@ -13,4 +13,4 @@ scrapper:
   extract_endpoint: "/extract"
 
   # Request timeout in seconds — increase for large crawl jobs
-  timeout_seconds: 120
+  timeout_seconds: 240
