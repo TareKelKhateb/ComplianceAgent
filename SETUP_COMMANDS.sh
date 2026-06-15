@@ -20,8 +20,11 @@ uv run python -c "import pydantic; print('pydantic', pydantic.__version__)"
 # STEP 2 — Ollama Models (run these in any terminal, not inside uv)
 # ===========================================================================
 
-# Pull Llama 3 8B (Router layer) — ~4.7 GB download
-ollama pull llama3:8b
+# Pull Llama 3 8B (Router layer — standard) — ~4.7 GB download
+# ollama pull llama3:8b
+
+# OR Pull Llama 3.2 3B (Router layer — RECOMMENDED for 8-12GB VRAM) — ~2.0 GB download
+ollama pull llama3.2:3b
 
 # Pull Qwen 2.5 7B (Inference layer) — ~4.4 GB download
 ollama pull qwen2.5:7b
@@ -40,7 +43,11 @@ ollama serve
 
 # LLM_BASE_URL=http://localhost:11434/api/generate
 # LLM_MODEL_NAME=qwen2.5:7b
-# ROUTER_MODEL_NAME=llama3:8b
+
+# Choose one router model:
+# ROUTER_MODEL_NAME=llama3:8b              # standard router
+# ROUTER_MODEL_NAME=llama3.2:3b            # recommended for 8-12GB VRAM (more stable)
+
 # HF_HUB_DISABLE_SYMLINKS_WARNING=1      # suppress the Windows symlink warning
 
 

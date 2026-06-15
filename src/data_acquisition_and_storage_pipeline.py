@@ -99,12 +99,10 @@ if __name__ == "__main__":
     
     test_pdf_path = r"D:\ITI\dummy.pdf"
     test_url = "https://example.com/dummy-test-file"
-    # الفانكشن محتاجة Hash، هنبعت أي Hash وهمي للتجربة (64 حرف)
     fake_hash = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z0123456789abc"
 
     logger.info("Starting push test for: %s", test_pdf_path)
     
-    # استخدام الاسم الصحيح للفانكشن والبارامترات المطلوبة
     sync_success = parser.push_to_dagshub(
         local_pdf_path=test_pdf_path, 
         file_url=test_url,

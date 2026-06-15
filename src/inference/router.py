@@ -190,6 +190,7 @@ class AgenticRouter:
             "prompt": prompt,
             "stream": False,
             "format": "json",       # Ollama native JSON mode — forces valid JSON output
+            "keep_alive": 0,        # Unload model from memory immediately after execution
             "options": {
                 "temperature": 0.0, # Zero temperature for deterministic, structured output
                 "num_predict": 512,
