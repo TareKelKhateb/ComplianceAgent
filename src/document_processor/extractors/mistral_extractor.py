@@ -3,6 +3,7 @@ import os
 from typing import List
 
 from mistralai.client import Mistral
+from mistralai.client.utils import BackoffStrategy, RetryConfig
 
 from .base_extractor import BaseExtractor
 from dotenv import load_dotenv
@@ -40,7 +41,17 @@ class MistralExtractor(BaseExtractor):
                 "Set MISTRAL_API_KEY in your environment or pass api_key= explicitly."
             )
 
-        self._client = Mistral(api_key=resolved_key)
+        retry_config = RetryConfig(
+            strategy="backoff",
+            backoff=BackoffStrategy(
+                initial_interval=1000,
+                max_interval=60000,
+                exponent=2.0,
+                max_elapsed_time=300000
+            ),
+            retry_connection_errors=True
+        )
+        self._client = Mistral(api_key=resolved_key, retry_config=retry_config)
         self._model = model
         self._table_format = table_format
 
