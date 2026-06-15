@@ -567,7 +567,7 @@ def update_ocr_status(db_path: str, document_id: str, status: str) -> None:
     """
     with _get_connection(db_path) as conn:
         conn.execute(
-            "UPDATE documents SET ocr_status = ? WHERE id = ?",
+            "UPDATE documents SET ocr_status = ? WHERE id = ? AND is_last = 1",
             (status, document_id)
         )
         conn.commit()
@@ -616,7 +616,7 @@ def insert_document_chunks_batch(db_path: str, chunks: list[dict[str, Any]]) -> 
             conn.execute("""
                 UPDATE documents 
                 SET ocr_status = 'completed', ocr_processed_at = ? 
-                WHERE id = ?
+                WHERE id = ? AND is_last = 1
             """, (now, doc_id))
             
             conn.commit()

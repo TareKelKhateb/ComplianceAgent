@@ -1243,7 +1243,7 @@ class MetadataStore:
             query = f"""
                 UPDATE documents 
                 SET ocr_status = ? {processed_at_clause} {retry_clause} 
-                WHERE id = ?
+                WHERE id = ? AND is_last = 1
             """
             
             try:
