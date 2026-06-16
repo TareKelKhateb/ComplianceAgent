@@ -1473,11 +1473,7 @@ class ParsingMetaDataExtractor:
                             )
                             # The DB layer atomically demotes is_last on insert
                             # when version > 1, so no explicit update_old_version
-                            # call is needed. However we call it explicitly for
-                            # clarity and auditability.
-                            self.update_old_version(
-                                document_id=doc_id, fields={"is_last": False}
-                            )
+                            # call is needed.
                             store_result = self.store_new_version(insert_payload)
                             if store_result.success:
                                 self.logger.info(
@@ -1662,7 +1658,6 @@ class ParsingMetaDataExtractor:
                     stored_doc = meta_result.data
                     if self.has_file_changed(new_hash, stored_doc.sha256_hash):
                         self.logger.info("⬆️ [UPDATE] Content changed.")
-                        self.update_old_version(document_id=doc_id, fields={"is_last": False})
                         store_result = self.store_new_version(insert_payload)
                         if store_result.success:
                             worker_stats["updated"] += 1
