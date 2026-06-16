@@ -7,7 +7,7 @@ Upper layers (storage_manager.py) call these functions — they never touch SQL 
 
 import sqlite3
 import os
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime, timezone
 
 from .models import StoredDocument, HashCheckResult, BatchStorageResult
@@ -38,6 +38,8 @@ def _row_to_document(row: sqlite3.Row) -> StoredDocument:
         year=row["year"],
         date=row["date"],
         language=row["language"],
+        category=row["category"],
+        subcategory=row["subcategory"],
         sha256_hash=row["sha256_hash"],
         version=row["version"],
         is_last=bool(row["is_last"]),
@@ -52,51 +54,155 @@ def _row_to_document(row: sqlite3.Row) -> StoredDocument:
 # Schema
 # ---------------------------------------------------------------------------
 
+import os
+import sqlite3
 def init_db(db_path: str) -> None:
     """
-    Create the database and tables if they don't exist yet.
-    Safe to call multiple times (idempotent).
+    Initialize the database and ensure the schema is up to date.
+    This function creates missing tables and adds missing columns to existing tables
+    without affecting current data (Schema Evolution).
+    
+    Args:
+        db_path (str): The filesystem path to the SQLite database file.
     """
+    # Ensure the directory for the database file exists
     parent_dir = os.path.dirname(os.path.abspath(db_path))
     os.makedirs(parent_dir, exist_ok=True)
 
-    with _get_connection(db_path) as conn:
+    with sqlite3.connect(db_path) as conn:
+        # Check if the table exists
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='documents'")
+        table_exists = cursor.fetchone() is not None
+
+        if table_exists:
+            # Table exists. Let's inspect primary keys to see if we need a migration
+            table_info = conn.execute("PRAGMA table_info(documents)").fetchall()
+            pk_cols = [row[1] for row in table_info if row[5] > 0]
+            if pk_cols and "version" not in pk_cols:
+                # We need to migrate to composite primary key (id, version)!
+                # Rename the table
+                conn.execute("ALTER TABLE documents RENAME TO documents_old")
+                
+                # Create the new table with composite primary key
+                conn.execute("""
+                    CREATE TABLE documents (
+                        id TEXT NOT NULL,
+                        file_url TEXT NOT NULL,
+                        sha256_hash TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (id, version)
+                    )
+                """)
+                
+                # Evolve columns first on the new table so all schema columns exist
+                new_columns = [
+                    ("title", "TEXT"),
+                    ("document_type", "TEXT"),
+                    ("issuing_entity", "TEXT"),
+                    ("document_number", "TEXT"),
+                    ("year", "TEXT"),
+                    ("date", "TEXT"),
+                    ("language", "TEXT"),
+                    ("category", "TEXT"),
+                    ("subcategory", "TEXT"),
+                    ("version", "INTEGER NOT NULL DEFAULT 1"),
+                    ("is_last", "INTEGER NOT NULL DEFAULT 1"),
+                    ("file_path", "TEXT"),
+                    ("file_size_bytes", "INTEGER"),
+                    ("download_status", "TEXT NOT NULL DEFAULT 'pending'"),
+                    ("ocr_status", "TEXT NOT NULL DEFAULT 'pending'"),
+                    ("ocr_processed_at", "TEXT"),
+                    ("retry_count", "INTEGER NOT NULL DEFAULT 0")
+                ]
+                for col_name, col_type in new_columns:
+                    try:
+                        conn.execute(f"ALTER TABLE documents ADD COLUMN {col_name} {col_type}")
+                    except sqlite3.OperationalError:
+                        pass
+                
+                # Copy data from documents_old (matching whatever columns exist in documents_old)
+                old_cols = [row[1] for row in table_info]
+                new_cols_set = {"id", "file_url", "sha256_hash", "created_at"} | {c[0] for c in new_columns}
+                cols_to_copy = [c for c in old_cols if c in new_cols_set]
+                
+                cols_str = ", ".join(cols_to_copy)
+                conn.execute(f"""
+                    INSERT INTO documents ({cols_str})
+                    SELECT {cols_str} FROM documents_old
+                """)
+                
+                # Drop old table
+                conn.execute("DROP TABLE documents_old")
+        else:
+            # Table does not exist, create it with composite key
+            conn.execute("""
+                CREATE TABLE documents (
+                    id TEXT NOT NULL,
+                    file_url TEXT NOT NULL,
+                    sha256_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (id, version)
+                )
+            """)
+
+        # 2. List of columns that might be added to the 'documents' table over time.
+        new_columns = [
+            ("title", "TEXT"),
+            ("document_type", "TEXT"),
+            ("issuing_entity", "TEXT"),
+            ("document_number", "TEXT"),
+            ("year", "TEXT"),
+            ("date", "TEXT"),
+            ("language", "TEXT"),
+            ("category", "TEXT"),
+            ("subcategory", "TEXT"),
+            ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ("is_last", "INTEGER NOT NULL DEFAULT 1"),
+            ("file_path", "TEXT"),
+            ("file_size_bytes", "INTEGER"),
+            ("download_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("ocr_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("ocr_processed_at", "TEXT"),
+            ("retry_count", "INTEGER NOT NULL DEFAULT 0")
+        ]
+        
+        for col_name, col_type in new_columns:
+            try:
+                # Attempt to add the column to the table
+                conn.execute(f"ALTER TABLE documents ADD COLUMN {col_name} {col_type}")
+            except sqlite3.OperationalError:
+                # Column already exists, safe to ignore
+                pass
+
+        # 3. Create the 'document_chunks' table to store OCR output and text segments
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS documents (
+            CREATE TABLE IF NOT EXISTS document_chunks (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                -- Scraped metadata
-                file_url         TEXT    NOT NULL,
-                title            TEXT,
-                document_type    TEXT,
-                issuing_entity   TEXT,
-                document_number  TEXT,
-                year             TEXT,
-                date             TEXT,
-                language         TEXT,
-
-                -- Storage layer fields
-                sha256_hash      TEXT    NOT NULL,
-                version          INTEGER NOT NULL DEFAULT 1,
-                is_last          INTEGER NOT NULL DEFAULT 1,  -- 1=True, 0=False
-                file_path        TEXT,
-                file_size_bytes  INTEGER,
-                download_status  TEXT    NOT NULL DEFAULT 'pending',
-                created_at       TEXT    NOT NULL
+                doc_id           TEXT NOT NULL,
+                chunk_id         TEXT,     -- New deterministic ID field
+                chunk_index      INTEGER NOT NULL,
+                content          TEXT    NOT NULL,
+                bbox             TEXT,
+                page_number      INTEGER,
+                chunk_hash       TEXT    NOT NULL,
+                is_active        INTEGER NOT NULL DEFAULT 1, 
+                version          INTEGER NOT NULL DEFAULT 1, 
+                created_at       TEXT,     
+                change_type      TEXT    DEFAULT 'unchanged',
+                old_content      TEXT,             
+                FOREIGN KEY (doc_id) REFERENCES documents (id) ON DELETE CASCADE
             )
         """)
 
-        # Index on (file_url, version) for fast hash lookups
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_url_version
-            ON documents (file_url, version)
-        """)
+        # Add chunk_id column to existing tables (Schema Evolution)
+        try:
+            conn.execute("ALTER TABLE document_chunks ADD COLUMN chunk_id TEXT")
+        except sqlite3.OperationalError:
+            pass
 
-        # Index on is_last for quickly finding current versions
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_is_last
-            ON documents (is_last)
-        """)
+        # 4. Create performance indices for faster queries
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocr_status ON documents (ocr_status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks (doc_id)")
 
         conn.commit()
 
@@ -105,9 +211,9 @@ def init_db(db_path: str) -> None:
 # Hash Check  (core deduplication logic)
 # ---------------------------------------------------------------------------
 
-def check_hash(db_path: str, file_url: str, sha256_hash: str) -> dict:
+def check_hash(db_path: str, document_id: str, sha256_hash: str) -> dict:
     """
-    Check if a URL + hash combination already exists in the DB.
+    Check if a document ID + hash combination already exists in the DB.
 
     Returns a plain dict with keys:
     - "action"       : "skip" | "insert"
@@ -115,36 +221,36 @@ def check_hash(db_path: str, file_url: str, sha256_hash: str) -> dict:
     - "new_version"  : version number to use if inserting
     """
     with _get_connection(db_path) as conn:
-        # Check for exact match (same URL AND same hash)
+        # Check for exact match (same ID AND same hash)
         row = conn.execute(
-            "SELECT * FROM documents WHERE file_url = ? AND sha256_hash = ? LIMIT 1",
-            (file_url, sha256_hash),
+            "SELECT * FROM documents WHERE id = ? AND sha256_hash = ? LIMIT 1",
+            (document_id, sha256_hash),
         ).fetchone()
 
         if row:
             return {
                 "action": "skip",
-                "reason": "Exact duplicate — same URL and same hash already stored.",
+                "reason": "Exact duplicate — same ID and same hash already stored.",
                 "new_version": row["version"],
             }
 
-        # Check if URL exists at all (different hash = content changed)
+        # Check if ID exists at all (different hash = content changed)
         latest_row = conn.execute(
-            "SELECT * FROM documents WHERE file_url = ? AND is_last = 1 LIMIT 1",
-            (file_url,),
+            "SELECT * FROM documents WHERE id = ? AND is_last = 1 LIMIT 1",
+            (document_id,),
         ).fetchone()
 
         if latest_row:
             return {
                 "action": "insert",
-                "reason": f"Same URL, content changed — inserting as version {latest_row['version'] + 1}.",
+                "reason": f"Same ID, content changed — inserting as version {latest_row['version'] + 1}.",
                 "new_version": latest_row["version"] + 1,
             }
 
-        # URL never seen before
+        # ID never seen before
         return {
             "action": "insert",
-            "reason": "New URL — inserting as version 1.",
+            "reason": "New ID — inserting as version 1.",
             "new_version": 1,
         }
 
@@ -160,32 +266,34 @@ def insert_document(
 ) -> StoredDocument:
     """
     Insert a new document record.
-    Accepts a flat data dict containing file_url, sha256_hash, and any
+    Accepts a flat data dict containing id, file_url, sha256_hash, and any
     optional metadata fields.
     If this is version N+1, the previous is_last is set to False atomically.
     """
+    document_id = data.get("id", "").strip()
     file_url    = data.get("file_url", "").strip()
     sha256_hash = data.get("sha256_hash", "").strip()
     now = datetime.now(timezone.utc).isoformat()
 
     with _get_connection(db_path) as conn:
-        # Atomic transaction: demote old latest → insert new one
+        # Atomic transaction: demote old latest → insert new one by ID
         if version > 1:
             conn.execute(
-                "UPDATE documents SET is_last = 0 WHERE file_url = ? AND is_last = 1",
-                (file_url,),
+                "UPDATE documents SET is_last = 0 WHERE id = ? AND is_last = 1",
+                (document_id,),
             )
 
         cursor = conn.execute(
             """
             INSERT INTO documents (
-                file_url, title, document_type, issuing_entity,
-                document_number, year, date, language,
+                id, file_url, title, document_type, issuing_entity,
+                document_number, year, date, language, category, subcategory,
                 sha256_hash, version, is_last,
                 file_path, file_size_bytes, download_status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             """,
             (
+                document_id,
                 file_url,
                 data.get("title"),
                 data.get("document_type"),
@@ -194,6 +302,8 @@ def insert_document(
                 data.get("year"),
                 data.get("date"),
                 data.get("language"),
+                data.get("category"),
+                data.get("subcategory"),
                 sha256_hash,
                 version,
                 data.get("file_path"),
@@ -203,14 +313,13 @@ def insert_document(
             ),
         )
         conn.commit()
-        new_id = cursor.lastrowid
 
-    return get_document_by_id(db_path, new_id)
+    return get_document_by_id(db_path, document_id)
 
 
 def update_document_file_info(
     db_path: str,
-    document_id: int,
+    document_id: str,
     fields: dict,
 ) -> Optional[StoredDocument]:
     """
@@ -234,7 +343,7 @@ def update_document_file_info(
 
     with _get_connection(db_path) as conn:
         conn.execute(
-            f"UPDATE documents SET {set_clause} WHERE id = ?",
+            f"UPDATE documents SET {set_clause} WHERE id = ? AND is_last = 1",
             values,
         )
         conn.commit()
@@ -242,11 +351,11 @@ def update_document_file_info(
     return get_document_by_id(db_path, document_id)
 
 
-def mark_download_failed(db_path: str, document_id: int) -> None:
+def mark_download_failed(db_path: str, document_id: str) -> None:
     """Mark a document record as failed to download."""
     with _get_connection(db_path) as conn:
         conn.execute(
-            "UPDATE documents SET download_status = 'failed' WHERE id = ?",
+            "UPDATE documents SET download_status = 'failed' WHERE id = ? AND is_last = 1",
             (document_id,),
         )
         conn.commit()
@@ -256,13 +365,33 @@ def mark_download_failed(db_path: str, document_id: int) -> None:
 # Read operations
 # ---------------------------------------------------------------------------
 
-def get_document_by_id(db_path: str, document_id: int) -> Optional[StoredDocument]:
-    """Fetch a single document by its primary key."""
+def get_document_by_id(db_path: str, document_id: str) -> Optional[StoredDocument]:
+    """Fetch the latest version of a document by its ID."""
     with _get_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM documents WHERE id = ?", (document_id,)
+            "SELECT * FROM documents WHERE id = ? AND is_last = 1 LIMIT 1", (document_id,)
         ).fetchone()
     return _row_to_document(row) if row else None
+
+
+def get_latest_by_id(db_path: str, document_id: str) -> Optional[StoredDocument]:
+    """Fetch the latest (is_last=True) version of a document by ID."""
+    with _get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM documents WHERE id = ? AND is_last = 1 LIMIT 1",
+            (document_id,),
+        ).fetchone()
+    return _row_to_document(row) if row else None
+
+
+def get_all_versions_by_id(db_path: str, document_id: str) -> list[StoredDocument]:
+    """Fetch all versions of a document by ID, ordered oldest → newest."""
+    with _get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM documents WHERE id = ? ORDER BY version ASC",
+            (document_id,),
+        ).fetchall()
+    return [_row_to_document(r) for r in rows]
 
 
 def get_latest_by_url(db_path: str, file_url: str) -> Optional[StoredDocument]:
@@ -302,6 +431,8 @@ def search_by_metadata(
     document_number: Optional[str] = None,
     year: Optional[str] = None,
     language: Optional[str] = None,
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
     download_status: Optional[str] = None,
     latest_only: bool = True,
 ) -> list[StoredDocument]:
@@ -333,6 +464,12 @@ def search_by_metadata(
     if language:
         conditions.append("language = ?")
         params.append(language)
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+    if subcategory:
+        conditions.append("subcategory = ?")
+        params.append(subcategory)
     if download_status:
         conditions.append("download_status = ?")
         params.append(download_status)
@@ -373,8 +510,9 @@ def insert_documents_batch(db_path: str, docs: list[StoredDocument]) -> BatchSto
     # Prepare the data for high-speed insertion
     payload = [
         (
-            d.file_url, d.title, d.document_type, d.issuing_entity,
+            d.id, d.file_url, d.title, d.document_type, d.issuing_entity,
             d.document_number, d.year, d.date, d.language,
+            d.category, d.subcategory,
             d.sha256_hash, d.version, 1, # Mark as latest version
             d.file_path, d.file_size_bytes, d.download_status, now
         ) for d in docs
@@ -384,11 +522,12 @@ def insert_documents_batch(db_path: str, docs: list[StoredDocument]) -> BatchSto
         with _get_connection(db_path) as conn:
             cursor = conn.executemany("""
                 INSERT INTO documents (
-                    file_url, title, document_type, issuing_entity,
+                    id, file_url, title, document_type, issuing_entity,
                     document_number, year, date, language,
+                    category, subcategory,
                     sha256_hash, version, is_last,
                     file_path, file_size_bytes, download_status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, payload)
             conn.commit()
             inserted_count = cursor.rowcount
@@ -402,3 +541,120 @@ def insert_documents_batch(db_path: str, docs: list[StoredDocument]) -> BatchSto
         failed_count=len(docs) - inserted_count,
         errors=errors
     )
+
+
+# ---------------------------------------------------------------------------
+# OCR Operations (Layer 3 & Pipeline Helpers)
+# ---------------------------------------------------------------------------
+
+def get_pending_ocr_documents(db_path: str) -> list[StoredDocument]:
+    """
+    Fetch documents that are downloaded successfully but not yet processed by OCR.
+    
+    Returns:
+        list[StoredDocument]: List of documents ready for processing.
+    """
+    with _get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM documents WHERE download_status = 'completed' AND ocr_status = 'pending'"
+        ).fetchall()
+    return [_row_to_document(r) for r in rows]
+
+
+def update_ocr_status(db_path: str, document_id: str, status: str) -> None:
+    """
+    Update the OCR status of a document (e.g., to 'processing', 'completed', or 'failed').
+    """
+    with _get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE documents SET ocr_status = ? WHERE id = ? AND is_last = 1",
+            (status, document_id)
+        )
+        conn.commit()
+
+
+def insert_document_chunks_batch(db_path: str, chunks: list[dict[str, Any]]) -> bool:
+    """
+    Layer 3: Bulk insert OCR chunks and finalize the document's OCR lifecycle.
+    
+    Args:
+        db_path (str): Path to the SQLite database.
+        chunks (list[dict]): List of processed chunks from Layer 2.
+    
+    Returns:
+        bool: True if transaction succeeded, False otherwise.
+    """
+    if not chunks:
+        return False
+
+    doc_id: str = chunks[0]['doc_id']
+    now: str = datetime.now(timezone.utc).isoformat()
+    
+    # Map dictionary keys to database columns
+    payload = [
+        (
+            c['doc_id'], 
+            c.get('chunk_id'), # New deterministic ID
+            c['chunk_index'], 
+            c['content'], 
+            str(c.get('bbox', '')), # Ensure bbox is a string
+            c.get('page_number'), 
+            c['chunk_hash']
+        ) for c in chunks
+    ]
+
+    try:
+        with _get_connection(db_path) as conn:
+            # 1. Insert all chunks in one batch
+            conn.executemany("""
+                INSERT INTO document_chunks (
+                    doc_id, chunk_id, chunk_index, content, bbox, page_number, chunk_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, payload)
+
+            # 2. Update parent record to 'completed' and set the timestamp
+            conn.execute("""
+                UPDATE documents 
+                SET ocr_status = 'completed', ocr_processed_at = ? 
+                WHERE id = ? AND is_last = 1
+            """, (now, doc_id))
+            
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        print(f"[-] Database error during chunk storage: {e}")
+        return False    
+
+
+def get_documents_by_custom_filter(
+    db_path: str,
+    category: str,
+    subcategory: Optional[str] = None,
+    title: Optional[str] = None,
+    is_last: Optional[bool] = None,
+) -> list[StoredDocument]:
+    """
+    Query documents by category with optional subcategory, title, and is_last filters.
+    """
+    conditions = ["category = ?"]
+    params = [category]
+
+    if subcategory:
+        conditions.append("subcategory = ?")
+        params.append(subcategory)
+    if title:
+        conditions.append("title LIKE ?")
+        params.append(f"%{title}%")
+    if is_last is not None:
+        conditions.append("is_last = ?")
+        params.append(1 if is_last else 0)
+
+    where_clause = "WHERE " + " AND ".join(conditions)
+    query = f"SELECT * FROM documents {where_clause} ORDER BY created_at DESC"
+
+    with _get_connection(db_path) as conn:
+        rows = conn.execute(query, params).fetchall()
+    
+    return [_row_to_document(row) for row in rows]
+
+

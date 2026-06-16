@@ -1,138 +1,36 @@
-# ComplianceAgent
 
-A compliance-focused AI agent that leverages a containerized **Scraper Extractor Microservice** to retrieve and process web content.
 
----
+### Configuration
+1.  **Environment Variables**: Copy `.env.example` to `.env` and fill in your API keys:
+    ```bash
+    cp .env.example .env
+    ```
+    Required keys:
+    - `FIRECRAWL_API_KEY`
+    - `GOOGLE_API_KEY`
+    - `MISTRAL_API_KEY`
 
-## 🐳 Running the Scraper Extractor Service (Docker)
+2.  **Pipeline Settings**: Fine-tune the processing logic in `config/document_processor_config.yaml`.
 
-The scraper is packaged as a Docker image and exposed as a REST API on port **8000**.  
-The `docker-compose.yml` at the root of this project pulls the published image — **no local build required**.
-
-### Prerequisites
-
-| Tool | Minimum Version |
-|------|----------------|
-| Docker Desktop (or Docker Engine) | 24+ |
-| Docker Compose (bundled with Desktop) | v2+ |
-
----
-
-### 1 · Set up Environment Variables
-
-Create a `.env` file in the root of this project (next to `docker-compose.yml`).  
-Use the table below as a reference:
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `FIRECRAWL_API_KEY` | ✅ | API key for the Firecrawl scraping service |
-| `GEMINI_API_KEY` | ✅ | API key for the Google Gemini LLM |
-
-```dotenv
-# .env
-FIRECRAWL_API_KEY=your_firecrawl_key
-GEMINI_API_KEY=your_gemini_key
-```
-
----
-
-### 2 · Start the Service
-
+### Running the Test
 ```bash
-docker compose up -d
+uv run python src/document_processor/ocr_test.py
 ```
 
-This will:
-- Pull `tarekelkhateb/scraper-extractor-api:latest` from Docker Hub (first run only)
-- Start the container as `scraper_api`
-- Expose the API on **http://localhost:8000**
-
----
-
-### 3 · Verify It's Running
-
-```bash
-# Check container status
-docker compose ps
-
-# View live logs
-docker compose logs -f scraper-api
-
-# Quick health check via curl
-curl http://localhost:8000/docs
-```
-
-The interactive Swagger UI is available at **http://localhost:8000/docs**.
-
----
-
-### 4 · Make a Scrape / Extract Request
-
-**Single page scrape:**
-```bash
-curl -X POST http://localhost:8000/extract \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://www.example.com", "is_crawl": false, "limit": 1}'
-```
-
-**Site crawl (up to 10 pages):**
-```bash
-curl -X POST http://localhost:8000/extract \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://www.example.com", "is_crawl": true, "limit": 10}'
-```
-
-**Response shape:**
-```json
-{
-  "status": "success",
-  "data": [ { "...": "extracted fields" } ]
-}
-```
-
----
-
-### 5 · Stop the Service
-
-```bash
-docker compose down
-```
-
----
-
-## 🐍 Using the ScrapperClient (Python)
-
-Instead of calling the API manually, use the built-in `ScrapperClient` located at `src/Scrapper/ScrapperClient.py`.
-
-```python
-from src.Scrapper.ScrapperClient import ScrapperClient
-
-client = ScrapperClient()
-
-# Single page extraction
-result = client.extract(url="https://www.example.com")
-
-# Crawl multiple pages
-result = client.extract(url="https://www.example.com", is_crawl=True, limit=5)
-
-print(result)
-```
-
-The base URL is managed in `src/Scrapper/config.py` — update `SCRAPPER_BASE_URL` there if the service runs on a different host or port.
-
----
+### What it does:
+1.  **Database Audit**: Checks for the existence of `data/legal_vault.db`.
+2.  **Reset (Optional)**: Prompts to wipe the `ocr_chunks` table for a clean test run.
+3.  **Queue Processing**: Automatically fetches documents marked as `pending` from the database.
+4.  **Extraction**: Converts PDFs to Markdown using the configured strategy (e.g., Mistral OCR).
+5.  **Semantic Chunking**: Identifies legal articles (e.g., "مادة") and splits the text into logical, semantically consistent chunks.
+6.  **Persistence**: Synchronizes processed chunks back to the SQLite database and optionally saves the full Markdown output.
 
 ## 📁 Project Structure
-
-```
-ComplianceAgent/
-├── docker-compose.yml       # Pulls & runs the scraper image
-├── .env                     # Your secret keys (never commit this)
-├── Readme.md
-└── src/
-    ├── main.py
-    └── Scrapper/
-        ├── __init__.py
-        ├── config.py        # Service URL configuration
-        └── ScrapperClient.py  # HTTP client wrapper
-```
+- `src/document_processor/`: Core OCR and chunking logic.
+  - `ocr_engine.py`: Multi-strategy extractor implementation.
+  - `chunkers/`: Semantic and overlapping chunking logic.
+  - `pipeline_manager.py`: The unified orchestrator.
+- `data/`: SQLite databases and raw documents.
+- `config/`: YAML configuration files.
+- `output_markdown/`: (Generated) Extracted full-text Markdown files.
+- `tests/`: Pytest suite for regex and pipeline validation.

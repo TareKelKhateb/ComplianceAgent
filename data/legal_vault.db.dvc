@@ -1,0 +1,5 @@
+outs:
+- md5: 69430ad6c13d99c9a42a49a12757727b
+  size: 3170304
+  hash: md5
+  path: legal_vault.db

@@ -19,13 +19,21 @@ import logging
 import os
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 import requests
+from dotenv import load_dotenv
 
+load_dotenv()
+
+# pyrefly: ignore [missing-import]
 from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
+# pyrefly: ignore [missing-import]
 from src.metadata_manager.metadata_store import MetadataStore
+# pyrefly: ignore [missing-import]
 from src.metadata_manager.models import StorageResult
 
 # ---------------------------------------------------------------------------
@@ -89,6 +97,10 @@ class ParsingMetaDataExtractor:
         # Storage layer (source of truth — never modified here)
         self.metadata_store = metadata_store or MetadataStore()
 
+        # Thread synchronization locks for concurrency safety
+        self.db_lock = threading.Lock()
+        self.git_dvc_lock = threading.Lock()
+
     # =========================================================================
     # STEP 1 — Fetch raw metadata from the scraper microservice
     # =========================================================================
@@ -132,9 +144,9 @@ class ParsingMetaDataExtractor:
     # STEP 2 — Query the storage layer for existing records
     # =========================================================================
 
-    def does_document_exist(self, file_url: str) -> StorageResult:
+    def does_document_exist(self, document_id: str) -> StorageResult:
         """
-        Check whether a document URL is already present in the database.
+        Check whether a document ID is already present in the database.
 
         Returns
         -------
@@ -142,22 +154,14 @@ class ParsingMetaDataExtractor:
             .success = True always (check_document_exists never raises).
             .data    = True if found, False if not.
         """
-        return self.metadata_store.check_document_exists(file_url=file_url)
+        return self.metadata_store.check_document_exists(document_id=document_id)
 
     # Keep the old name as an alias so existing callers don't break.
     does_document_exists = does_document_exist
 
-    def fetch_existing_metadata(self, file_url: str) -> StorageResult:
+    def fetch_existing_metadata(self, document_id: str) -> StorageResult:
         """
-        Retrieve the latest stored version of a document by its URL.
-
-        NOTE: We intentionally use ``get_all_versions_by_url`` here instead of
-        ``get_latest_document_by_url``.  ``metadata_store.py`` contains a second
-        definition of ``get_latest_document_by_url`` (lines 966-982) that
-        overrides the correct one and queries a non-existent ``metadata`` table,
-        always returning ``None``.  Since that file is immutable, we route
-        through ``get_all_versions_by_url`` (which correctly targets the
-        ``documents`` table) and extract the highest-version record ourselves.
+        Retrieve the latest stored version of a document by its ID.
 
         Returns
         -------
@@ -165,13 +169,13 @@ class ParsingMetaDataExtractor:
             .success = True if a record was found, False otherwise.
             .data    = StoredDocument (latest version) on success, None on failure.
         """
-        versions_result = self.metadata_store.get_all_versions_by_url(file_url=file_url)
+        versions_result = self.metadata_store.get_all_versions_by_id(document_id=document_id)
 
-        # get_all_versions_by_url returns success=False when no records exist.
+        # get_all_versions_by_id returns success=False when no records exist.
         if not versions_result.success or not versions_result.data:
             return StorageResult(
                 success=False,
-                message=f"No document found for URL '{file_url}'.",
+                message=f"No document found for ID '{document_id}'.",
                 data=None,
             )
 
@@ -179,7 +183,7 @@ class ParsingMetaDataExtractor:
         latest = max(versions_result.data, key=lambda d: d.version)
         return StorageResult(
             success=True,
-            message=f"Latest version of '{file_url}' is version {latest.version}.",
+            message=f"Latest version of '{document_id}' is version {latest.version}.",
             data=latest,
         )
 
@@ -384,14 +388,14 @@ class ParsingMetaDataExtractor:
         """
         return self.metadata_store.insert_document(data=pdf_metadata)
 
-    def update_old_version(self, pdf_url: str, fields: dict) -> StorageResult:
+    def update_old_version(self, document_id: str, fields: dict) -> StorageResult:
         """
-        Update metadata fields on the latest version of a document by URL.
+        Update metadata fields on the latest version of a document by ID.
 
         Parameters
         ----------
-        pdf_url : str
-            URL of the document whose latest record will be updated.
+        document_id : str
+            ID of the document whose latest record will be updated.
         fields : dict
             Column-value pairs to update (e.g. ``{"is_last": False}``).
 
@@ -399,14 +403,13 @@ class ParsingMetaDataExtractor:
         -------
         StorageResult
         """
-        return self.metadata_store.update_document_by_url(
-            file_url=pdf_url, fields=fields
+        return self.metadata_store.update_document_by_id(
+            document_id=document_id, fields=fields
         )
 
     def delete_all_versions(self, pdf_url: str) -> StorageResult:
         """
         Permanently delete all stored versions for a given URL.
-
         Returns
         -------
         StorageResult
@@ -420,8 +423,9 @@ class ParsingMetaDataExtractor:
     def push_to_dagshub(
         self,
         local_pdf_path: str,
-        file_url: str,
+        document_id: str,
         content_hash: str,
+        file_url: str = None,
     ) -> bool:
         """
         Copy the locally-downloaded PDF into the DVC vault under a
@@ -462,12 +466,14 @@ class ParsingMetaDataExtractor:
         local_pdf_path : str
             Absolute or relative path to the PDF on the local filesystem.
             The file must already exist (downloaded by :meth:`download_pdf`).
-        file_url : str
-            Source URL of the PDF.  Passed to ``sync_to_dagshub`` so the DB
-            record can be updated with ``download_status = 'uploaded'``.
+        document_id : str
+            Unique ID of the document. Passed to ``sync_to_dagshub`` so the DB
+            record can be updated.
         content_hash : str
             Full SHA-256 hex digest of the file content (64 chars).  The
             first 8 characters are embedded in the vault filename.
+        file_url : str, optional
+            Source URL of the PDF.
 
         Returns
         -------
@@ -480,7 +486,7 @@ class ParsingMetaDataExtractor:
         -------
         >>> ok = parser.push_to_dagshub(
         ...     local_pdf_path="./local_download/CBE_Law_No._194_of_2020.pdf",
-        ...     file_url="https://cbe.org.eg/law194.pdf",
+        ...     document_id="01_banking_laws",
         ...     content_hash="a57db178865f...",
         ... )
         >>> if ok:
@@ -534,6 +540,7 @@ class ParsingMetaDataExtractor:
         )
         success = self.metadata_store.sync_to_dagshub(
             local_pdf_path=vault_local_copy,
+            document_id=document_id,
             file_url=file_url,
         )
 
@@ -1401,7 +1408,9 @@ class ParsingMetaDataExtractor:
                         continue
 
                     # Build the payload once — shared by both INSERT branches.
+                    doc_id = doc_dict.get("id") or safe_name
                     insert_payload = {
+                        "id": doc_id,
                         "file_url": file_url,
                         "sha256_hash": new_hash,
                         "is_last": True,
@@ -1420,7 +1429,7 @@ class ParsingMetaDataExtractor:
                     }
 
                     # ---- Step 3c: DB existence check -----------------------
-                    exist_result = self.does_document_exist(file_url=file_url)
+                    exist_result = self.does_document_exist(document_id=doc_id)
 
                     # check_document_exists always returns StorageResult with
                     # .success=True; .data is bool. Guard anyway for safety.
@@ -1441,7 +1450,7 @@ class ParsingMetaDataExtractor:
                             "🗃️  Record found in database. Checking for changes..."
                         )
 
-                        meta_result = self.fetch_existing_metadata(file_url=file_url)
+                        meta_result = self.fetch_existing_metadata(document_id=doc_id)
 
                         if not meta_result.success or meta_result.data is None:
                             self.logger.error(
@@ -1464,11 +1473,7 @@ class ParsingMetaDataExtractor:
                             )
                             # The DB layer atomically demotes is_last on insert
                             # when version > 1, so no explicit update_old_version
-                            # call is needed. However we call it explicitly for
-                            # clarity and auditability.
-                            self.update_old_version(
-                                pdf_url=file_url, fields={"is_last": False}
-                            )
+                            # call is needed.
                             store_result = self.store_new_version(insert_payload)
                             if store_result.success:
                                 self.logger.info(
@@ -1481,8 +1486,9 @@ class ParsingMetaDataExtractor:
                                 if push_to_dagshub:
                                     pushed = self.push_to_dagshub(
                                         local_pdf_path=insert_payload["file_path"],
-                                        file_url=file_url,
+                                        document_id=doc_id,
                                         content_hash=new_hash,
+                                        file_url=file_url,
                                     )
                                     stats["pushed" if pushed else "push_failed"] += 1
                             else:
@@ -1513,8 +1519,9 @@ class ParsingMetaDataExtractor:
                             if push_to_dagshub:
                                 pushed = self.push_to_dagshub(
                                     local_pdf_path=insert_payload["file_path"],
-                                    file_url=file_url,
+                                    document_id=doc_id,
                                     content_hash=new_hash,
+                                    file_url=file_url,
                                 )
                                 stats["pushed" if pushed else "push_failed"] += 1
                         else:
@@ -1538,3 +1545,227 @@ class ParsingMetaDataExtractor:
     
     def reset_metadate(self):
         self.metadata_store.reset_all_data()
+
+    # ------------------------------------------------------------------------------------------------------
+    # ## General Pipeline For Local Files & Remote URLs (Parallelized)
+    # ------------------------------------------------------------------------------------------------------
+
+    def _process_single_document_worker(
+        self,
+        doc_dict: dict,
+        save_dir: str,
+        push_to_dagshub: bool,
+    ) -> dict:
+        """
+        Worker task to process a single document.
+        Downloads, hashes, and updates DB (under self.db_lock), then pushes to DagsHub (under self.git_dvc_lock).
+        Returns a dict of stat increments to be aggregated by the main thread.
+        """
+        worker_stats = {"new": 0, "updated": 0, "skipped": 0, "failed": 0,
+                        "pushed": 0, "push_failed": 0}
+        title = doc_dict.get("title", "Unknown Title")
+        file_url = doc_dict.get("file_url")
+        
+        # Local file staging keys
+        local_path = doc_dict.get("local_path")
+        pdf_name = doc_dict.get("pdf_name")
+
+        self.logger.info("📄 Processing: %s", title)
+
+        try:
+            if not file_url:
+                self.logger.warning("⚠️ [SKIP] No file_url found for '%s'.", title)
+                worker_stats["skipped"] += 1
+                return worker_stats
+
+            pdf_bytes = None
+            final_file_path = ""
+
+            # ---- Step 3a: Check Local Path First --------------------
+            if local_path and pdf_name:
+                potential_path = os.path.join(local_path, pdf_name)
+                if os.path.exists(potential_path):
+                    self.logger.info("🏠 [LOCAL] File found at %s. Skipping download.", potential_path)
+                    try:
+                        with open(potential_path, "rb") as f:
+                            pdf_bytes = f.read()
+                        final_file_path = potential_path
+                    except Exception as e:
+                        self.logger.error("❌ [FAIL] Could not read local file %s: %s", potential_path, e)
+
+            # ---- Step 3b: Fallback to Download ----------------------
+            if not pdf_bytes:
+                safe_name = title.replace(" ", "_").replace("/", "-").replace("\\", "-")
+                if not safe_name.endswith(".pdf"):
+                    safe_name += ".pdf"
+                    
+                pdf_bytes = self.download_pdf(
+                    file_url=file_url,
+                    file_name=safe_name,
+                    save_directory=save_dir,
+                )
+                final_file_path = os.path.join(save_dir, safe_name)
+
+            if not pdf_bytes:
+                self.logger.error("❌ [FAIL] Source acquisition failed for '%s'. Skipping.", title)
+                worker_stats["failed"] += 1
+                return worker_stats
+
+            # ---- Step 3c: Hash -------------------------------------
+            new_hash = self.calculate_hash(file_content=pdf_bytes)
+            if not new_hash:
+                worker_stats["failed"] += 1
+                return worker_stats
+
+            # Build Payload (preserving 'id', 'category', 'subcategory' to prevent constraint violations)
+            doc_id = doc_dict.get("id") or title.replace(" ", "_").replace("/", "-").replace("\\", "-")
+            insert_payload = {
+                "id": doc_id,
+                "file_url": file_url,
+                "sha256_hash": new_hash,
+                "is_last": True,
+                "title": title,
+                "document_type": doc_dict.get("document_type"),
+                "issuing_entity": doc_dict.get("issuing_entity"),
+                "document_number": doc_dict.get("document_number"),
+                "year": doc_dict.get("year"),
+                "date": doc_dict.get("date"),
+                "language": doc_dict.get("language"),
+                "category": doc_dict.get("category"),
+                "subcategory": doc_dict.get("subcategory"),
+                "file_path": final_file_path,
+                "file_size_bytes": len(pdf_bytes),
+                "download_status": "downloaded",
+            }
+
+            # ---- Step 3d: DB operations under self.db_lock -----------
+            with self.db_lock:
+                exist_result = self.does_document_exist(document_id=doc_id)
+                if not exist_result.success:
+                    worker_stats["failed"] += 1
+                    return worker_stats
+
+                document_exists = bool(exist_result.data)
+
+                if document_exists:
+                    self.logger.info("🗃️ Record found. Checking hash...")
+                    meta_result = self.fetch_existing_metadata(document_id=doc_id)
+                    
+                    if not meta_result.success or meta_result.data is None:
+                        worker_stats["failed"] += 1
+                        return worker_stats
+
+                    stored_doc = meta_result.data
+                    if self.has_file_changed(new_hash, stored_doc.sha256_hash):
+                        self.logger.info("⬆️ [UPDATE] Content changed.")
+                        store_result = self.store_new_version(insert_payload)
+                        if store_result.success:
+                            worker_stats["updated"] += 1
+                            should_push = True
+                        else:
+                            worker_stats["failed"] += 1
+                            should_push = False
+                    else:
+                        self.logger.info("🔄 [SKIP] Up-to-date: '%s'", title)
+                        worker_stats["skipped"] += 1
+                        should_push = False
+                else:
+                    self.logger.info("➕ [NEW] Inserting version 1...")
+                    store_result = self.store_new_version(insert_payload)
+                    if store_result.success:
+                        worker_stats["new"] += 1
+                        should_push = True
+                    else:
+                        worker_stats["failed"] += 1
+                        should_push = False
+
+            # ---- Step 3e: Push to DagsHub under self.git_dvc_lock ----
+            if should_push and push_to_dagshub:
+                with self.git_dvc_lock:
+                    pushed = self.push_to_dagshub(
+                        local_pdf_path=final_file_path,
+                        document_id=doc_id,
+                        content_hash=new_hash,
+                        file_url=file_url,
+                    )
+                    if pushed:
+                        worker_stats["pushed"] += 1
+                    else:
+                        worker_stats["push_failed"] += 1
+
+        except Exception as exc:
+            self.logger.exception("💥 [UNHANDLED] Error processing '%s': %s", title, exc)
+            worker_stats["failed"] += 1
+
+        return worker_stats
+
+    def process_pipeline_general(
+        self,
+        target_url: str = "",
+        is_crawl: bool = False,
+        limit: int = 1,
+        save_directory: Optional[str] = None,
+        scraped_data: Optional[list] = None,
+        push_to_dagshub: bool = True,
+        max_workers: Optional[int] = None,
+    ) -> dict:
+        """
+        Generalized end-to-end ingestion pipeline supporting both 
+        remote downloads and pre-existing local files, using thread-pool
+        parallelism for massive performance gains.
+        """
+        if max_workers is None:
+            env_val = os.getenv("MAX_WORKERS")
+            max_workers = int(env_val) if env_val else 4
+
+        save_dir = save_directory or self.temp_download_dir
+        stats = {"new": 0, "updated": 0, "skipped": 0, "failed": 0,
+                 "pushed": 0, "push_failed": 0}
+
+        # --- Step 1: Obtain raw data ---
+        if scraped_data is not None:
+            self.logger.info("📂 Using pre-loaded data (%d items).", len(scraped_data))
+            raw_data = scraped_data
+        else:
+            if not target_url:
+                self.logger.error("❌ No target_url and no scraped_data. Halted.")
+                return stats
+            raw_data = self.fetch_incoming_data(url=target_url, is_crawl=is_crawl, limit=limit)
+                
+        if not raw_data:
+            self.logger.warning("🚫 No data available. Pipeline halted.")
+            return stats
+
+        # --- Step 2: Normalise ---
+        document_groups = raw_data if raw_data and isinstance(raw_data[0], list) else [raw_data]
+        total_docs = sum(len(g) for g in document_groups)
+        self.logger.info("📋 Processing %d document(s) across %d group(s).", total_docs, len(document_groups))
+
+        # Flatten the groups for direct ingestion by the ThreadPoolExecutor
+        flat_docs = []
+        for document_group in document_groups:
+            flat_docs.extend(document_group)
+
+        self.logger.info("⚡ Executing ingestion pipeline in parallel (max_workers=%d)...", max_workers)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(
+                    self._process_single_document_worker,
+                    doc_dict=doc,
+                    save_dir=save_dir,
+                    push_to_dagshub=push_to_dagshub,
+                )
+                for doc in flat_docs
+            ]
+            
+            for future in futures:
+                try:
+                    result_stats = future.result()
+                    for k, v in result_stats.items():
+                        stats[k] += v
+                except Exception as e:
+                    self.logger.error("💥 Critical thread failure processing document task: %s", e)
+                    stats["failed"] += 1
+
+        return stats

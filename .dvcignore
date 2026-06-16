@@ -30,6 +30,7 @@ __pycache__/
 
 # Database files (tracked separately via Git)
 *.db
+!data/legal_vault.db
 *.sqlite3
 
 # Temporary and build files
