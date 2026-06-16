@@ -307,6 +307,89 @@ class Orchestrator:
     # Public entry points
     # ------------------------------------------------------------------
 
+    def run_with_local_file(
+        self,
+        local_pdf_path: str,
+        title: str | None = None,
+        metadata: dict | None = None,
+    ) -> str | None:
+        """
+        Ingest a local PDF file, either by creating a human-in-the-loop review session
+        or running it directly through the ingestion and OCR stages.
+
+        Parameters
+        ----------
+        local_pdf_path : str
+            Absolute or relative path to the local PDF file.
+        title : str, optional
+            A descriptive title for the document. Defaults to the filename.
+        metadata : dict, optional
+            Optional metadata fields (e.g., document_type, issuing_entity, year, language, etc.).
+
+        Returns
+        -------
+        str | None
+            The review URL if `use_adjustments` is True, or None if processed immediately.
+        """
+        import uuid
+
+        logger.info("=" * 60)
+        logger.info("STARTING PIPELINE FOR LOCAL FILE: %s", local_pdf_path)
+        logger.info("=" * 60)
+
+        if not os.path.exists(local_pdf_path):
+            raise FileNotFoundError(f"Local file not found at: {local_pdf_path}")
+
+        local_path = os.path.dirname(os.path.abspath(local_pdf_path))
+        pdf_name = os.path.basename(local_pdf_path)
+        default_title = os.path.splitext(pdf_name)[0]
+
+        meta = metadata or {}
+        record = {
+            "id": meta.get("id") or default_title.replace(" ", "_"),
+            "title": title or default_title,
+            "document_type": meta.get("document_type"),
+            "issuing_entity": meta.get("issuing_entity"),
+            "document_number": meta.get("document_number"),
+            "year": meta.get("year"),
+            "date": meta.get("date"),
+            "language": meta.get("language"),
+            "file_url": f"local://{uuid.uuid4().hex[:8]}/{pdf_name}",
+            "local_path": local_path,
+            "pdf_name": pdf_name,
+            "category": meta.get("category"),
+            "subcategory": meta.get("subcategory"),
+        }
+
+        if self.use_adjustments:
+            logger.info("Creating a metadata review session on the User Adjustments API…")
+            api_url = os.getenv("USER_ADJUSTMENTS_API_URL", "http://localhost:8080")
+            payload = {"documents": [[record]]}
+            
+            try:
+                response = requests.post(f"{api_url}/api/sessions", json=payload, timeout=15)
+                response.raise_for_status()
+                session_data = response.json()
+                
+                session_id = session_data["session_id"]
+                review_url = f"{api_url.rstrip('/')}{session_data['review_url']}"
+                
+                logger.info("Successfully created review session: %s", session_id)
+                logger.info("Review link: %s", review_url)
+                
+                send_review_email(review_url)
+                
+                logger.info("=" * 60)
+                logger.info("ORCHESTRATION PAUSED — AWAITING HUMAN REVIEW & APPROVAL")
+                logger.info("=" * 60)
+                return review_url
+            except Exception as exc:
+                logger.error("Failed to create review session: %s. Falling back to immediate ingestion…", exc)
+
+        self._stage_ingest([record])
+        self._stage_ocr()
+        return None
+
     def run_with_data(self, records: list[dict]) -> None:
         """
         Execute the pipeline with externally-provided (user-approved) records.
