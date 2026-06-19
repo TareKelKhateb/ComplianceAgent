@@ -312,6 +312,7 @@ class Orchestrator:
         local_pdf_path: str,
         title: str | None = None,
         metadata: dict | None = None,
+        is_internal: bool = False,
     ) -> str | None:
         """
         Ingest a local PDF file, either by creating a human-in-the-loop review session
@@ -325,6 +326,8 @@ class Orchestrator:
             A descriptive title for the document. Defaults to the filename.
         metadata : dict, optional
             Optional metadata fields (e.g., document_type, issuing_entity, year, language, etc.).
+        is_internal : bool, optional
+            If True, automatically classifies this document as an internal policy/procedure.
 
         Returns
         -------
@@ -345,6 +348,7 @@ class Orchestrator:
         default_title = os.path.splitext(pdf_name)[0]
 
         meta = metadata or {}
+        category = "Internal" if is_internal else meta.get("category")
         record = {
             "id": meta.get("id") or default_title.replace(" ", "_"),
             "title": title or default_title,
@@ -357,7 +361,7 @@ class Orchestrator:
             "file_url": f"local://{uuid.uuid4().hex[:8]}/{pdf_name}",
             "local_path": local_path,
             "pdf_name": pdf_name,
-            "category": meta.get("category"),
+            "category": category,
             "subcategory": meta.get("subcategory"),
         }
 
@@ -492,6 +496,8 @@ class Orchestrator:
 
         # Stage 4 — OCR & chunking for changed documents
         self._stage_ocr()
+
+        # VDB 
 
         logger.info("=" * 60)
         logger.info("ORCHESTRATION CYCLE FINISHED")

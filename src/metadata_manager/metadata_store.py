@@ -1200,7 +1200,7 @@ class MetadataStore:
             failed previously but have not exceeded the retry limit.
             """
             query = """
-                SELECT id, file_path, file_url, title FROM documents 
+                SELECT id, file_path, file_url, title, category FROM documents 
                 WHERE (download_status = 'downloaded' OR download_status = 'uploaded')
                 AND (
                     ocr_status = 'pending' 

@@ -116,6 +116,8 @@ function updateSessionBadge() {
 function disableAllInputs() {
     const inputs = document.querySelectorAll(".input-field");
     inputs.forEach(input => input.setAttribute("disabled", "true"));
+    const toggle = document.getElementById("field-internal-toggle");
+    if (toggle) toggle.setAttribute("disabled", "true");
     document.getElementById("btn-approve").setAttribute("disabled", "true");
     document.getElementById("btn-reject").setAttribute("disabled", "true");
     showToast(`This session is ${sessionInfo.status.toUpperCase()} and cannot be edited.`, "info");
@@ -274,8 +276,34 @@ async function selectDocument(idx) {
     document.getElementById("field-document-number").value = doc.document_number || "";
     document.getElementById("field-year").value = doc.year || "";
     document.getElementById("field-language").value = doc.language || "English";
-    document.getElementById("field-category").value = doc.category || "";
     document.getElementById("field-subcategory").value = doc.subcategory || "";
+
+    // Sync internal document toggle and category input
+    const isInternal = (doc.category || "").trim().toLowerCase() === "internal";
+    const toggleEl = document.getElementById("field-internal-toggle");
+    const categoryEl = document.getElementById("field-category");
+    const toggleLabelEl = document.getElementById("internal-toggle-label");
+    
+    toggleEl.checked = isInternal;
+    if (isInternal) {
+        categoryEl.value = "Internal";
+        categoryEl.setAttribute("disabled", "true");
+        toggleLabelEl.textContent = "Internal Document";
+    } else {
+        categoryEl.value = doc.category || "";
+        if (sessionInfo && sessionInfo.status === 'pending') {
+            categoryEl.removeAttribute("disabled");
+        } else {
+            categoryEl.setAttribute("disabled", "true");
+        }
+        toggleLabelEl.textContent = "External (General Law)";
+    }
+
+    if (sessionInfo && sessionInfo.status === 'pending') {
+        toggleEl.removeAttribute("disabled");
+    } else {
+        toggleEl.setAttribute("disabled", "true");
+    }
     
     // Set PDF link
     const pdfLink = document.getElementById("editor-pdf-link");
@@ -299,6 +327,31 @@ async function selectDocument(idx) {
 // ==========================================================================
 // Inline Editing, Validation & Debounced Auto-saving
 // ==========================================================================
+function handleInternalToggle(checked) {
+    if (!sessionInfo || sessionInfo.status !== 'pending' || activeDocIdx === -1) return;
+    
+    const categoryEl = document.getElementById("field-category");
+    const toggleLabelEl = document.getElementById("internal-toggle-label");
+    
+    if (checked) {
+        categoryEl.value = "Internal";
+        categoryEl.setAttribute("disabled", "true");
+        toggleLabelEl.textContent = "Internal Document";
+        
+        documents[activeDocIdx].category = "Internal";
+        queueSave(activeDocIdx, 'category', 'Internal');
+    } else {
+        categoryEl.value = "";
+        categoryEl.removeAttribute("disabled");
+        toggleLabelEl.textContent = "External (General Law)";
+        
+        documents[activeDocIdx].category = "";
+        queueSave(activeDocIdx, 'category', '');
+    }
+    
+    updateEditorValidationBadges();
+}
+
 function handleFieldInput(field, value) {
     if (!sessionInfo || sessionInfo.status !== 'pending') return;
     
