@@ -1,18 +1,31 @@
 import logging
 from typing import Any, Dict, List, Optional
+
 from src.document_processor.pipeline_manager import OCRPipeline
-from src.corporate_processor.chunkers.corporate_chunker import CorporateChunker
+from src.corporate_processor.chunkers.base_chunker import BaseChunker
+from src.corporate_processor.chunkers.corporate_chunker import get_chunker
+from src.corporate_processor.chunkers.config import Config
 
 logger = logging.getLogger(__name__)
 
 class ChunkOrchestrator:
     """
-    Consolidated Orchestrator handling extraction, chunking, and LLM refinement logic.
-    Provides a clean, single-entry interface without unnecessary abstractions.
+    Consolidated Orchestrator handling extraction, chunking, and refinement logic.
+
+    The active refinement strategy is resolved once at construction time via
+    ``get_chunker(Config.CHUNK_REFINEMENT_STRATEGY)``, so the strategy can be
+    switched simply by changing the config value — no code changes required.
     """
-    def __init__(self, pipeline: OCRPipeline):
+
+    def __init__(self, pipeline: OCRPipeline) -> None:
         self.pipeline = pipeline
-        self.chunker = CorporateChunker()
+        Config.validate()  # Fail fast on misconfiguration
+        self.chunker: BaseChunker = get_chunker(Config.CHUNK_REFINEMENT_STRATEGY)
+        logger.info(
+            "[*] ChunkOrchestrator: using refinement strategy='%s' (%s)",
+            Config.CHUNK_REFINEMENT_STRATEGY,
+            type(self.chunker).__name__,
+        )
 
     def run(self, pdf_path: str, doc_id: str) -> Optional[List[Dict[str, Any]]]:
         """

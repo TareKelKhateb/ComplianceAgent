@@ -13,7 +13,8 @@ Linear Flow:
         └─► metadata  (dict)
               │
               ▼
-    CorporateChunker                 ← split_text_by_headers + refine_chunk (LLM)
+    BaseChunker (strategy resolved by CHUNK_REFINEMENT_STRATEGY)
+                             ← split_text_by_headers + refine_chunk
               │
               ▼
     CorporateChunkStore.insert_chunks_batch()   ← SQLite persistence
@@ -40,7 +41,9 @@ from src.corporate_processor.config import CorporateConfig
 # pyrefly: ignore [missing-import]
 from src.corporate_processor.pipeline_manager import PipelineManager
 # pyrefly: ignore [missing-import]
-from src.corporate_processor.chunkers.corporate_chunker import CorporateChunker
+from src.corporate_processor.chunkers.config import Config as ChunkerConfig
+from src.corporate_processor.chunkers.base_chunker import BaseChunker
+from src.corporate_processor.chunkers.corporate_chunker import get_chunker
 # pyrefly: ignore [missing-import]
 from src.corporate_processor.corporate_metadata_manager.corporate_store import CorporateChunkStore
 # pyrefly: ignore [missing-import]
@@ -70,8 +73,16 @@ class CorporateEndToEndPipeline:
     ) -> None:
         self.config   = config or CorporateConfig.load()
         self.manager  = PipelineManager(config=self.config)
-        self.chunker  = CorporateChunker()
         self.store    = CorporateChunkStore(db_path=db_path)
+
+        # Validate and resolve the active refinement strategy at startup (fail-fast)
+        ChunkerConfig.validate()
+        self.chunker: BaseChunker = get_chunker(ChunkerConfig.CHUNK_REFINEMENT_STRATEGY)
+        logger.info(
+            "[Pipeline] Chunker strategy resolved: '%s' → %s",
+            ChunkerConfig.CHUNK_REFINEMENT_STRATEGY,
+            type(self.chunker).__name__,
+        )
 
     # -----------------------------------------------------------------------
     # Public API
@@ -164,9 +175,10 @@ class CorporateEndToEndPipeline:
         self, raw_text: str, doc_id: str, metadata: dict, store: CorporateChunkStore
     ) -> ChunkStorageResult:
         """
-        Stage 2 & 3: Split the raw text by headers and refine each chunk via LLM.
+        Stage 2 & 3: Split the raw text by headers then pass each chunk through
+        the active refinement strategy (LLM, semantic, or pass-through).
         Incrementally stores each chunk into the database as soon as it's refined.
-        Falls back to the raw chunk content if LLM refinement fails for any chunk.
+        Falls back to the raw chunk content if refinement raises for any chunk.
         """
         from src.corporate_processor.corporate_metadata_manager.models import ChunkBatchResult
 

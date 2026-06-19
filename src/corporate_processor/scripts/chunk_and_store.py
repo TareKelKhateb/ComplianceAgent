@@ -1,6 +1,9 @@
 """
-Stage 2 — Read pre-extracted text/metadata from Stage 1, refine via LLM,
+Stage 2 — Read pre-extracted text/metadata from Stage 1, refine using the
+configured CHUNK_REFINEMENT_STRATEGY ('llm', 'semantic', or 'none'),
 and persist to data/corporate_chunks.db.
+
+Switch strategies by setting CHUNK_REFINEMENT_STRATEGY in .env or config.py.
 Run: uv run python src/corporate_processor/scripts/chunk_and_store.py
 """
 import json
@@ -13,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 # pyrefly: ignore [missing-import]
 from src.corporate_processor.config import CorporateConfig
 # pyrefly: ignore [missing-import]
-from src.corporate_processor.chunkers.corporate_chunker import CorporateChunker
+from src.corporate_processor.chunkers.config import Config as ChunkerConfig
+# pyrefly: ignore [missing-import]
+from src.corporate_processor.chunkers.corporate_chunker import get_chunker
 # pyrefly: ignore [missing-import]
 from src.corporate_processor.corporate_metadata_manager.corporate_store import CorporateChunkStore
 
@@ -37,7 +42,17 @@ def main():
         sys.exit(1)
 
     logger.info("Found %d document(s) to chunk and store.", len(metadata_files))
-    chunker = CorporateChunker()
+
+    # Validate and resolve the active chunking strategy from config/env
+    try:
+        ChunkerConfig.validate()
+    except ValueError as exc:
+        logger.error("Chunker configuration error: %s", exc)
+        sys.exit(1)
+
+    chunker = get_chunker(ChunkerConfig.CHUNK_REFINEMENT_STRATEGY)
+    logger.info("Active refinement strategy: '%s' (%s)",
+                ChunkerConfig.CHUNK_REFINEMENT_STRATEGY, type(chunker).__name__)
     store   = CorporateChunkStore()
     total_inserted, total_skipped = 0, 0
 
