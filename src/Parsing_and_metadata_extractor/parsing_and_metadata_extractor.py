@@ -1566,7 +1566,13 @@ class ParsingMetaDataExtractor:
         title = doc_dict.get("title", "Unknown Title")
         file_url = doc_dict.get("file_url")
         
-        # Local file staging keys
+        # Log document classification for auditability
+        is_internal = (doc_dict.get("category") or "").strip().lower() == "internal"
+        self.logger.info(
+            "📄 Processing [%s]: %s",
+            "INTERNAL" if is_internal else "EXTERNAL",
+            title,
+        )
         local_path = doc_dict.get("local_path")
         pdf_name = doc_dict.get("pdf_name")
 

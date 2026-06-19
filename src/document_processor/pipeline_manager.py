@@ -18,6 +18,7 @@ from .extractors.mistral_extractor import MistralExtractor
 from .chunkers.base_chunker import BaseChunker
 from .chunkers.overlapping_chunker import OverlappingChunker
 from .chunkers.semantic_chunker import SemanticChunker
+from .chunkers.embedding_semantic_chunker import EmbeddingSemanticChunker
 from .semantic_hasher import SemanticHasher
 from .diff_engine import DiffEngine
 # ---------------------------------------------------------------------------
@@ -105,6 +106,16 @@ def _build_chunker(cfg: Dict[str, Any]) -> BaseChunker:
     else:
         raise ValueError(f"Unknown chunker_type '{chunker_type}'. Valid options: 'semantic', 'overlapping'.")
 
+
+def _build_chunker_for_internal(cfg: Dict[str, Any]) -> BaseChunker:
+    """Build the chunker used for internal documents (embedding-similarity based)."""
+    print("[*] Factory: Using EmbeddingSemanticChunker for internal documents")
+    return EmbeddingSemanticChunker(
+        similarity_threshold=cfg.get("embedding_chunker", {}).get("similarity_threshold", 0.45),
+        max_chunk_words=cfg.get("embedding_chunker", {}).get("max_chunk_words", 500),
+        min_chunk_words=cfg.get("embedding_chunker", {}).get("min_chunk_words", 30),
+    )
+
 # ---------------------------------------------------------------------------
 # Main Pipeline
 # ---------------------------------------------------------------------------
@@ -128,7 +139,14 @@ class OCRPipeline:
 
         # Strategy injection: explicit > config-driven
         self.extractor: BaseExtractor = extractor or _build_extractor(self._cfg)
-        self.chunker: BaseChunker = chunker or _build_chunker(self._cfg)
+
+        # External/general-law chunker (article-aware semantic by default)
+        self.external_chunker: BaseChunker = chunker or _build_chunker(self._cfg)
+        # Internal document chunker (embedding-similarity based)
+        self.internal_chunker: BaseChunker = _build_chunker_for_internal(self._cfg)
+
+        # Legacy alias — defaults to external chunker for backward compat
+        self.chunker: BaseChunker = self.external_chunker
 
         self.hasher = SemanticHasher()
         self.diff_engine = DiffEngine()
@@ -138,9 +156,29 @@ class OCRPipeline:
 
         self.task_queue = queue.Queue()
 
-    def run(self, pdf_path: str, doc_id: str) -> bool:
+    def _select_chunker(self, category: str = "") -> BaseChunker:
+        """Select the appropriate chunker based on document category."""
+        is_internal = (category or "").strip().lower() == "internal"
+        if is_internal:
+            print(f"[*] Chunker routing: INTERNAL → {type(self.internal_chunker).__name__}")
+            return self.internal_chunker
+        else:
+            print(f"[*] Chunker routing: EXTERNAL → {type(self.external_chunker).__name__}")
+            return self.external_chunker
+
+    def run(self, pdf_path: str, doc_id: str, category: str = "") -> bool:
         """
         Execute the full processing pipeline for one document version.
+
+        Parameters
+        ----------
+        pdf_path : str
+            Path to the PDF file.
+        doc_id : str
+            Unique document identifier.
+        category : str
+            Document category — "Internal" routes to EmbeddingSemanticChunker,
+            anything else routes to the default (external) chunker.
         """
         try:
             # 0. Preparation
@@ -152,8 +190,9 @@ class OCRPipeline:
             if not full_text:
                 return False
 
-            # 2. Chunking
-            raw_chunks = self._execute_chunking_layer(full_text, doc_id)
+            # 2. Chunking — select chunker based on category
+            active_chunker = self._select_chunker(category)
+            raw_chunks = self._execute_chunking_layer(full_text, doc_id, chunker=active_chunker)
             if not raw_chunks:
                 return False
 
@@ -200,10 +239,16 @@ class OCRPipeline:
             
         return full_text
 
-    def _execute_chunking_layer(self, full_text: str, doc_id: str) -> Optional[List[Dict[str, Any]]]:
-        """Splits text into chunks."""
-        print(f"[*] Chunking: Using {type(self.chunker).__name__}...")
-        raw_chunks = self.chunker.create_chunks(full_text, doc_id)
+    def _execute_chunking_layer(
+        self,
+        full_text: str,
+        doc_id: str,
+        chunker: Optional[BaseChunker] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Splits text into chunks using the specified (or default) chunker."""
+        active_chunker = chunker or self.external_chunker
+        print(f"[*] Chunking: Using {type(active_chunker).__name__}...")
+        raw_chunks = active_chunker.create_chunks(full_text, doc_id)
 
         if not raw_chunks:
             print(f"[!] Chunker produced no chunks for Doc ID {doc_id}. Aborting.")
@@ -310,7 +355,7 @@ class OCRPipeline:
     # Producer-Consumer Concurrency Methods
     # ------------------------------------------------------------------
 
-    def _run_extraction_only(self, pdf_path: str, doc_id: str) -> None:
+    def _run_extraction_only(self, pdf_path: str, doc_id: str, category: str = "") -> None:
         """Producer worker: extracts text and places it in the queue."""
         try:
             self.store.update_ocr_status(doc_id, "processing")
@@ -318,7 +363,8 @@ class OCRPipeline:
             if full_text:
                 self.task_queue.put({
                     "doc_id": doc_id,
-                    "full_text": full_text
+                    "full_text": full_text,
+                    "category": category,
                 })
         except Exception as exc:
             self._handle_pipeline_failure(doc_id, exc)
@@ -332,11 +378,14 @@ class OCRPipeline:
             
             doc_id = task["doc_id"]
             full_text = task["full_text"]
+            category = task.get("category", "")
             
             try:
                 base_chunks, next_ver, created_at = self._prepare_pipeline_session(doc_id)
                 
-                raw_chunks = self._execute_chunking_layer(full_text, doc_id)
+                # Select chunker based on document category
+                active_chunker = self._select_chunker(category)
+                raw_chunks = self._execute_chunking_layer(full_text, doc_id, chunker=active_chunker)
                 if not raw_chunks:
                     continue
                 
@@ -397,8 +446,9 @@ class OCRPipeline:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for doc in documents:
                 doc_id, pdf_path = doc["id"], doc["file_path"]
-                print(f"\n[>] Queuing for Extraction: {pdf_path} (ID: {doc_id})")
-                executor.submit(self._run_extraction_only, pdf_path, doc_id)
+                category = doc.get("category", "")
+                print(f"\n[>] Queuing for Extraction: {pdf_path} (ID: {doc_id}, Category: {category or 'External'})")
+                executor.submit(self._run_extraction_only, pdf_path, doc_id, category)
                 
         # 3. All producers finished. Send poison pill to Consumer and wait for it.
         self.task_queue.put(None)
