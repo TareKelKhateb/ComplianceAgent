@@ -1,0 +1,43 @@
+schema: '2.0'
+stages:
+  run_mapping_pipeline:
+    cmd: uv run python -m src.mapping.orchestrator
+    deps:
+    - path: data/corporate_chunks.db
+      hash: md5
+      md5: 30fc7293c7410abff0cd56914295d2de
+      size: 217088
+    - path: data/legal_vault.db
+      hash: md5
+      md5: b78fb2931ea87fb1018be836ad57e486
+      size: 458752
+    - path: src/mapping/data_manager/
+      hash: md5
+      md5: aba990b2702e3fb69b2113ce64540173.dir
+      size: 10173
+      nfiles: 6
+    - path: src/mapping/llm_engine/client.py
+      hash: md5
+      md5: 95fd31834e600ecbfa3e65a659c79ae5
+      size: 4064
+    - path: src/mapping/llm_engine/prompts.txt
+      hash: md5
+      md5: 190b82abb4fd74ecb993f2796640fcab
+      size: 2498
+    - path: src/mapping/orchestrator.py
+      hash: md5
+      md5: 442222931070f43f132a38e61202ce5c
+      size: 7477
+    - path: src/mapping/vector_search.py
+      hash: md5
+      md5: 0cbc3214bac773535b665deb1a25267d
+      size: 4365
+    outs:
+    - path: data/mapping_metrics.json
+      hash: md5
+      md5: e8fa06f3dc691183dcb11383c2339575
+      size: 111
+    - path: mapping.db
+      hash: md5
+      md5: 750cdde1f23e038f0f368342ac18db8c
+      size: 24576
