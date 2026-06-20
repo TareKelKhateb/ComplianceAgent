@@ -180,19 +180,20 @@ class OCRPipeline:
             Document category — "Internal" routes to EmbeddingSemanticChunker,
             anything else routes to the default (external) chunker.
         """
+        is_internal = (category or "").strip().lower() == "internal"
         try:
             # 0. Preparation
-            base_chunks, next_ver, created_at = self._prepare_pipeline_session(doc_id)
+            base_chunks, next_ver, created_at = self._prepare_pipeline_session(doc_id, is_internal=is_internal)
             print(f"\n[>] Pipeline starting — Doc ID: {doc_id} | Target version: {next_ver}")
 
             # 1. Layer 1 — Extraction
-            full_text = self._execute_extraction_layer(pdf_path, doc_id)
+            full_text = self._execute_extraction_layer(pdf_path, doc_id, is_internal=is_internal)
             if not full_text:
                 return False
 
             # 2. Chunking — select chunker based on category
             active_chunker = self._select_chunker(category)
-            raw_chunks = self._execute_chunking_layer(full_text, doc_id, chunker=active_chunker)
+            raw_chunks = self._execute_chunking_layer(full_text, doc_id, chunker=active_chunker, is_internal=is_internal)
             if not raw_chunks:
                 return False
 
@@ -203,10 +204,10 @@ class OCRPipeline:
             final_chunks = self._execute_diff_layer(base_chunks, refined_chunks)
 
             # 5. Persistence
-            return self._finalize_pipeline_results(doc_id, final_chunks, base_chunks)
+            return self._finalize_pipeline_results(doc_id, final_chunks, base_chunks, is_internal=is_internal)
 
         except Exception as exc:
-            self._handle_pipeline_failure(doc_id, exc)
+            self._handle_pipeline_failure(doc_id, exc, is_internal=is_internal)
             raise
 
 
@@ -216,22 +217,22 @@ class OCRPipeline:
     # Private Implementation Methods
     # ------------------------------------------------------------------
 
-    def _prepare_pipeline_session(self, doc_id: str):
+    def _prepare_pipeline_session(self, doc_id: str, is_internal: bool = False):
         """Initializes the processing session by fetching metadata."""
-        self.store.update_ocr_status(doc_id, "processing")
-        base_chunks = self.store.get_latest_chunks(doc_id)
-        next_ver = self.store.get_next_version_number(doc_id)
+        self.store.update_ocr_status(doc_id, "processing", is_internal=is_internal)
+        base_chunks = self.store.get_latest_chunks(doc_id, is_internal=is_internal)
+        next_ver = self.store.get_next_version_number(doc_id, is_internal=is_internal)
         created_at = datetime.now().isoformat()
         return base_chunks, next_ver, created_at
 
-    def _execute_extraction_layer(self, pdf_path: str, doc_id: str) -> Optional[str]:
+    def _execute_extraction_layer(self, pdf_path: str, doc_id: str, is_internal: bool = False) -> Optional[str]:
         """Handles Layer 1: PDF Extraction."""
         print(f"[*] Layer 1: Extracting text using {type(self.extractor).__name__}...")
         full_text: str = self.extractor.extract_text(pdf_path)
 
         if not full_text or len(full_text.strip()) < 10:
             print(f"[!] No content extracted for Doc ID {doc_id}. Aborting.")
-            self.store.update_ocr_status(doc_id, "failed")
+            self.store.update_ocr_status(doc_id, "failed", is_internal=is_internal)
             return None
 
         if self._save_full_text:
@@ -244,6 +245,7 @@ class OCRPipeline:
         full_text: str,
         doc_id: str,
         chunker: Optional[BaseChunker] = None,
+        is_internal: bool = False,
     ) -> Optional[List[Dict[str, Any]]]:
         """Splits text into chunks using the specified (or default) chunker."""
         active_chunker = chunker or self.external_chunker
@@ -252,7 +254,7 @@ class OCRPipeline:
 
         if not raw_chunks:
             print(f"[!] Chunker produced no chunks for Doc ID {doc_id}. Aborting.")
-            self.store.update_ocr_status(doc_id, "failed")
+            self.store.update_ocr_status(doc_id, "failed", is_internal=is_internal)
             return None
 
         return raw_chunks
@@ -279,9 +281,10 @@ class OCRPipeline:
         print(f"[*] Layer 3: Comparing with {len(base_chunks)} previous chunks…")
         return self.diff_engine.compare_documents(base_chunks, refined_chunks)
 
-    def _finalize_pipeline_results(self, doc_id: str, final_chunks: List[Dict[str, Any]], base_chunks: List[Dict[str, Any]]) -> bool:
+    def _finalize_pipeline_results(self, doc_id: str, final_chunks: List[Dict[str, Any]], base_chunks: List[Dict[str, Any]], is_internal: bool = False) -> bool:
         """Saves data to DB and updates status using an incremental strategy."""
         print(f"[*] Synchronizing DB for Doc ID {doc_id}…")
+        table = "corporate_chunks" if is_internal else "document_chunks"
         
         # 1. Separate chunks into those that need saving and those that are unchanged
         to_save = [c for c in final_chunks if c.get('change_type') != 'unchanged']
@@ -299,7 +302,7 @@ class OCRPipeline:
                 for chunk in to_save:
                     # Archive previous version of this specific chunk_id if it exists
                     conn.execute(
-                        "UPDATE document_chunks SET is_active = 0 WHERE doc_id = ? AND chunk_id = ? AND is_active = 1",
+                        f"UPDATE {table} SET is_active = 0 WHERE doc_id = ? AND chunk_id = ? AND is_active = 1",
                         (doc_id, chunk['chunk_id'])
                     )
                 
@@ -308,7 +311,7 @@ class OCRPipeline:
                 for b_chunk in base_chunks:
                     if b_chunk['chunk_id'] not in final_ids:
                         conn.execute(
-                            "UPDATE document_chunks SET is_active = 0 WHERE doc_id = ? AND chunk_id = ? AND is_active = 1",
+                            f"UPDATE {table} SET is_active = 0 WHERE doc_id = ? AND chunk_id = ? AND is_active = 1",
                             (doc_id, b_chunk['chunk_id'])
                         )
                 conn.commit()
@@ -317,27 +320,27 @@ class OCRPipeline:
 
         # 3. Save only the new/modified chunks
         if not to_save:
-            self.store.update_ocr_status(doc_id, "completed")
+            self.store.update_ocr_status(doc_id, "completed", is_internal=is_internal)
             score = self.diff_engine.get_similarity_score(base_chunks, final_chunks)
             print(f"[+] Pipeline complete — 0 new/modified chunks. No changes detected. | Similarity: {score}%")
             return True
 
-        save_result = self.store.save_chunks(to_save)
+        save_result = self.store.save_chunks(to_save, is_internal=is_internal)
 
         if save_result.success:
-            self.store.update_ocr_status(doc_id, "completed")
+            self.store.update_ocr_status(doc_id, "completed", is_internal=is_internal)
             score = self.diff_engine.get_similarity_score(base_chunks, final_chunks)
             print(f"[+] Pipeline complete — {len(to_save)} new/modified chunks saved | Similarity: {score}%")
             return True
         else:
             print(f"[!] Storage failed: {save_result.message}")
-            self.store.update_ocr_status(doc_id, "failed")
+            self.store.update_ocr_status(doc_id, "failed", is_internal=is_internal)
             return False
 
-    def _handle_pipeline_failure(self, doc_id: str, exc: Exception):
+    def _handle_pipeline_failure(self, doc_id: str, exc: Exception, is_internal: bool = False):
         """Logs errors and updates DB status."""
         print(f"[!] Pipeline error for Doc ID {doc_id}: {exc}")
-        self.store.update_ocr_status(doc_id, "failed")
+        self.store.update_ocr_status(doc_id, "failed", is_internal=is_internal)
 
     def _persist_full_text(self, full_text: str, pdf_path: str) -> str:
         """Save the full Markdown string to a file in ``_full_text_dir``."""
@@ -357,9 +360,10 @@ class OCRPipeline:
 
     def _run_extraction_only(self, pdf_path: str, doc_id: str, category: str = "") -> None:
         """Producer worker: extracts text and places it in the queue."""
+        is_internal = (category or "").strip().lower() == "internal"
         try:
-            self.store.update_ocr_status(doc_id, "processing")
-            full_text = self._execute_extraction_layer(pdf_path, doc_id)
+            self.store.update_ocr_status(doc_id, "processing", is_internal=is_internal)
+            full_text = self._execute_extraction_layer(pdf_path, doc_id, is_internal=is_internal)
             if full_text:
                 self.task_queue.put({
                     "doc_id": doc_id,
@@ -367,7 +371,7 @@ class OCRPipeline:
                     "category": category,
                 })
         except Exception as exc:
-            self._handle_pipeline_failure(doc_id, exc)
+            self._handle_pipeline_failure(doc_id, exc, is_internal=is_internal)
 
     def _consumer_daemon(self) -> None:
         """Consumer thread: reads text from the queue and processes DB operations sequentially."""
@@ -379,22 +383,23 @@ class OCRPipeline:
             doc_id = task["doc_id"]
             full_text = task["full_text"]
             category = task.get("category", "")
+            is_internal = (category or "").strip().lower() == "internal"
             
             try:
-                base_chunks, next_ver, created_at = self._prepare_pipeline_session(doc_id)
+                base_chunks, next_ver, created_at = self._prepare_pipeline_session(doc_id, is_internal=is_internal)
                 
                 # Select chunker based on document category
                 active_chunker = self._select_chunker(category)
-                raw_chunks = self._execute_chunking_layer(full_text, doc_id, chunker=active_chunker)
+                raw_chunks = self._execute_chunking_layer(full_text, doc_id, chunker=active_chunker, is_internal=is_internal)
                 if not raw_chunks:
                     continue
                 
                 refined_chunks = self._execute_semantic_layer(raw_chunks, next_ver, created_at)
                 final_chunks = self._execute_diff_layer(base_chunks, refined_chunks)
                 
-                self._finalize_pipeline_results(doc_id, final_chunks, base_chunks)
+                self._finalize_pipeline_results(doc_id, final_chunks, base_chunks, is_internal=is_internal)
             except Exception as exc:
-                self._handle_pipeline_failure(doc_id, exc)
+                self._handle_pipeline_failure(doc_id, exc, is_internal=is_internal)
 
     # ------------------------------------------------------------------
     # Batch processing

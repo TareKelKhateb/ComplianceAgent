@@ -32,14 +32,6 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.metadata_manager.metadata_store import MetadataStore
-from src.Parsing_and_metadata_extractor.parsing_and_metadata_extractor import ParsingMetaDataExtractor
-from src.document_processor.pipeline_manager import OCRPipeline
-from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
-import requests
-from src.Orchetrator.email_sender import send_review_email
-from src.mapping.orchestrator import run_mapping_pipeline
-
 # ---------------------------------------------------------------------------
 # Logging — coloured console output (stdlib only, no extra packages)
 # ---------------------------------------------------------------------------
@@ -115,6 +107,17 @@ def _setup_logging(level: int = logging.INFO) -> None:
 
 _setup_logging()
 logger = logging.getLogger("Orchestrator")
+
+# ---------------------------------------------------------------------------
+# Sibling imports (imported after logging setup to ensure colored formatting takes precedence)
+# ---------------------------------------------------------------------------
+from src.metadata_manager.metadata_store import MetadataStore
+from src.Parsing_and_metadata_extractor.parsing_and_metadata_extractor import ParsingMetaDataExtractor
+from src.document_processor.pipeline_manager import OCRPipeline
+from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
+import requests
+from src.Orchetrator.email_sender import send_review_email
+from src.mapping.orchestrator import run_mapping_pipeline
 
 
 # ---------------------------------------------------------------------------

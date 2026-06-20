@@ -192,11 +192,12 @@ class MetadataStore:
                         "Your teammate should compute this before calling insert_document().",
             )
 
-        check = check_hash(self.db_path, id, sha256_hash)
+        is_internal = data.get("category", "").strip().lower() == "internal"
+        check = check_hash(self.db_path, id, sha256_hash, is_internal=is_internal)
 
         if check["action"] == "skip":
             # return the existing record so the caller still gets a StoredDocument
-            existing = get_document_by_id(self.db_path, id)
+            existing = get_document_by_id(self.db_path, id, is_internal=is_internal)
             return StorageResult(
                 success=True,
                 message=f"Skipped (no insert needed): {check['reason']}",
@@ -204,7 +205,7 @@ class MetadataStore:
             )
 
         try:
-            doc = insert_document(self.db_path, data, version=check["new_version"])
+            doc = insert_document(self.db_path, data, version=check["new_version"], is_internal=is_internal)
             return StorageResult(
                 success=True,
                 message=f"Inserted successfully — {check['reason']}",
@@ -503,8 +504,10 @@ class MetadataStore:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute("DELETE FROM document_chunks")
                 conn.execute("DELETE FROM documents")
+                conn.execute("DELETE FROM corporate_chunks")
+                conn.execute("DELETE FROM internal_documents")
                 # Reset the AUTOINCREMENT counter
-                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('documents', 'document_chunks')")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('documents', 'document_chunks', 'internal_documents', 'corporate_chunks')")
                 conn.commit()
             return StorageResult(
                 success=True,
@@ -1066,6 +1069,14 @@ class MetadataStore:
     # Internal helpers
     # =======================================================================
 
+    def _docs_table(self, is_internal: bool = False) -> str:
+        """Return the documents table name based on document type."""
+        return "internal_documents" if is_internal else "documents"
+
+    def _chunks_table(self, is_internal: bool = False) -> str:
+        """Return the chunks table name based on document type."""
+        return "corporate_chunks" if is_internal else "document_chunks"
+
     def _promote_previous_version(self, file_url: str) -> None:
         """After deleting the latest version, promote the next newest to is_last=1."""
         # Re-query AFTER the delete so we only see remaining versions
@@ -1144,17 +1155,19 @@ class MetadataStore:
             if document_id or file_url:
                 try:
                     if document_id:
-                        doc = get_latest_by_id(self.db_path, document_id)
+                        doc = get_latest_by_id(self.db_path, document_id, is_internal=False) or get_latest_by_id(self.db_path, document_id, is_internal=True)
                         identifier = f"ID '{document_id}'"
                     else:
-                        doc = get_latest_by_url(self.db_path, file_url)
+                        doc = get_latest_by_url(self.db_path, file_url, is_internal=False) or get_latest_by_url(self.db_path, file_url, is_internal=True)
                         identifier = f"URL '{file_url}'"
 
                     if doc:
+                        is_internal = (doc.category or "").strip().lower() == "internal"
                         update_result = update_document_file_info(
                             self.db_path,
                             doc.id,
-                            {"download_status": "uploaded", "file_path": final_path}
+                            {"download_status": "uploaded", "file_path": final_path},
+                            is_internal=is_internal
                         )
                         if update_result:
                             print(f"✓ Database updated: document {doc.id} marked as 'uploaded'")
@@ -1206,6 +1219,15 @@ class MetadataStore:
                     ocr_status = 'pending' 
                     OR (ocr_status = 'failed' AND retry_count < 3)
                 )
+
+                UNION ALL
+
+                SELECT id, file_path, file_url, title, category FROM internal_documents 
+                WHERE (download_status = 'downloaded' OR download_status = 'uploaded')
+                AND (
+                    ocr_status = 'pending' 
+                    OR (ocr_status = 'failed' AND retry_count < 3)
+                )
             """
             try:
                 with self._get_connection(self.db_path) as conn:
@@ -1216,7 +1238,7 @@ class MetadataStore:
                 print(f"[!] Error fetching pending documents: {e}")
                 return []
             
-    def update_ocr_status(self, doc_id: int, status: str) -> StorageResult:
+    def update_ocr_status(self, doc_id: int, status: str, is_internal: bool = False) -> StorageResult:
             """
             Updates the OCR status of a specific document and handles retry logic.
             Valid statuses: 'pending', 'processing', 'completed', 'failed'.
@@ -1226,6 +1248,7 @@ class MetadataStore:
             processed_at_clause = ""
             retry_clause = ""
             params = [status]
+            table = self._docs_table(is_internal)
             
             # 1. Handle timestamp for completed documents
             if status == 'completed':
@@ -1241,7 +1264,7 @@ class MetadataStore:
 
             # 4. Construct the dynamic SQL query
             query = f"""
-                UPDATE documents 
+                UPDATE {table} 
                 SET ocr_status = ? {processed_at_clause} {retry_clause} 
                 WHERE id = ? AND is_last = 1
             """
@@ -1365,30 +1388,32 @@ class MetadataStore:
 
     def reset_all_chunks(self) -> StorageResult:
         """
-        ⚠ DANGER: Wipe only the OCR chunks table and reset its ID counter.
+        ⚠ DANGER: Wipe only the OCR chunks tables and reset their ID counters.
         Useful if you want to re-run the entire OCR pipeline from scratch
         without losing the document metadata.
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute("DELETE FROM document_chunks")
+                conn.execute("DELETE FROM corporate_chunks")
                 
                 conn.execute(
-                    "DELETE FROM sqlite_sequence WHERE name = 'document_chunks'"
+                    "DELETE FROM sqlite_sequence WHERE name IN ('document_chunks', 'corporate_chunks')"
                 )
                 
                 conn.execute("UPDATE documents SET ocr_status = 'pending', ocr_processed_at = NULL")
+                conn.execute("UPDATE internal_documents SET ocr_status = 'pending', ocr_processed_at = NULL")
                 
                 conn.commit()
                 
             return StorageResult(
                 success=True,
-                message="OCR chunks table wiped and reset. All documents marked as 'pending' OCR.",
+                message="OCR chunks tables wiped and reset. All documents marked as 'pending' OCR.",
             )
         except Exception as e:
             return StorageResult(success=False, message=f"Reset chunks failed: {e}")
 
-    def get_next_version_number(self, doc_id: str) -> int:
+    def get_next_version_number(self, doc_id: str, is_internal: bool = False) -> int:
             """
             Calculates the next version number for a document's chunks by finding the 
             current maximum version and incrementing it.
@@ -1399,7 +1424,8 @@ class MetadataStore:
             Returns:
                 int: The incremented version number (starting from 1).
             """
-            query = "SELECT MAX(version) FROM document_chunks WHERE doc_id = ?"
+            table = self._chunks_table(is_internal)
+            query = f"SELECT MAX(version) FROM {table} WHERE doc_id = ?"
             try:
                 with self._get_connection() as conn:
                     result = conn.execute(query, (doc_id,)).fetchone()
@@ -1409,7 +1435,7 @@ class MetadataStore:
                 # Default to version 1 if any database error occurs during check
                 return 1
 
-    def archive_old_chunks(self, doc_id: str) -> None:
+    def archive_old_chunks(self, doc_id: str, is_internal: bool = False) -> None:
             """
             Soft-deletes existing chunks for a document by setting 'is_active' to 0.
             This preserves historical data for comparison while ensuring only the 
@@ -1418,7 +1444,8 @@ class MetadataStore:
             Args:
                 doc_id (int): The primary key of the document to archive.
             """
-            query = "UPDATE document_chunks SET is_active = 0 WHERE doc_id = ?"
+            table = self._chunks_table(is_internal)
+            query = f"UPDATE {table} SET is_active = 0 WHERE doc_id = ?"
             try:
                 with self._get_connection() as conn:
                     conn.execute(query, (doc_id,))
@@ -1427,7 +1454,7 @@ class MetadataStore:
                 # Log error or handle as needed for your pipeline's robustness
                 print(f"Error archiving chunks for Doc ID {doc_id}: {e}")
 
-    def save_chunks(self, chunks: List[Dict[str, Any]]) -> StorageResult:
+    def save_chunks(self, chunks: List[Dict[str, Any]], is_internal: bool = False) -> StorageResult:
                 """
                 Performs a bulk insert of OCR chunks including versioning and diff status.
 
@@ -1437,9 +1464,10 @@ class MetadataStore:
                 if not chunks:
                     return StorageResult(success=False, message="No chunks to save.")
 
+                table = self._chunks_table(is_internal)
                 # Updated Query to include Diff Results
-                query = """
-                    INSERT INTO document_chunks (
+                query = f"""
+                    INSERT INTO {table} (
                         doc_id, chunk_id, chunk_index, content, bbox, 
                         page_number, chunk_hash, is_active, version, 
                         created_at, change_type, old_content
@@ -1498,15 +1526,16 @@ class MetadataStore:
             print(f"[!] Error retrieving chunks by version: {e}")
             return []
 
-    def get_latest_chunks(self, doc_id: str) -> List[Dict[str, Any]]:
+    def get_latest_chunks(self, doc_id: str, is_internal: bool = False) -> List[Dict[str, Any]]:
         """
         Retrieves the current active (latest) chunks for a document.
         This is used in the OCR Pipeline to provide a base for comparison (Diff).
         """
-        query = """
+        table = self._chunks_table(is_internal)
+        query = f"""
             SELECT chunk_id, chunk_index, content, bbox, page_number, chunk_hash, 
                    is_active, version, created_at
-            FROM document_chunks 
+            FROM {table} 
             WHERE doc_id = ? AND is_active = 1
             ORDER BY chunk_index ASC
         """
@@ -1521,14 +1550,15 @@ class MetadataStore:
 
 
  ### FOR LLM USAGE 
-    def get_active_chunks(self, doc_id: str) -> List[Dict[str, Any]]:
+    def get_active_chunks(self, doc_id: str, is_internal: bool = False) -> List[Dict[str, Any]]:
         """
         Retrieves only the most recent (active) chunks for a document.
         Used for standard RAG/Question-Answering.
         """
-        query = """
+        table = self._chunks_table(is_internal)
+        query = f"""
             SELECT chunk_id, chunk_index, content, page_number, chunk_hash
-            FROM document_chunks 
+            FROM {table} 
             WHERE doc_id = ? AND is_active = 1
             ORDER BY chunk_index ASC
         """
