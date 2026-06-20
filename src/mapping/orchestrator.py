@@ -23,9 +23,10 @@ import logging
 import uuid
 from typing import List, Optional
 
+# pyrefly: ignore [missing-import]
 from src.mapping.data_manager.database import (
     MappingBridgeTable,
-    SessionCorp,
+    SessionLaw,
     SessionMapping,
     init_db,
 )
@@ -42,12 +43,17 @@ logger = logging.getLogger(__name__)
 
 class ComplianceMapper:
     """
-    Orchestrates the compliance mapping pipeline using dual database sessions.
+    Orchestrates the compliance mapping pipeline using a unified database session.
 
-    The class lazily opens a SessionCorp (read-only corporate DB) and a
-    SessionMapping (read-write mapping DB) on the first call to run(), and
-    keeps them open for the lifetime of the instance so that multiple run()
-    calls within one workflow reuse the same connections.
+    The class opens a SessionLaw (read-only, targets legal_vault.db — which
+    contains both the `corporate_chunks` and `document_chunks` tables) and a
+    SessionMapping (read-write, targets mapping.db) on initialisation, and keeps
+    them open for the lifetime of the instance so that multiple run() calls
+    within one workflow reuse the same connections.
+
+    The retired SessionCorp / corporate_chunks.db is no longer used: all
+    corporate policy chunks are now sourced from the `corporate_chunks` table
+    inside legal_vault.db.
 
     Call .close() explicitly, or use the instance as a context manager, to
     release the sessions when done.
@@ -58,9 +64,9 @@ class ComplianceMapper:
         # if the database configuration is broken, rather than a silent failure
         # buried inside run().
         init_db()
-        self._db_corp: SessionCorp = SessionCorp()       # read-only corporate DB
+        self._db_law: SessionLaw = SessionLaw()          # read-only — legal_vault.db (corporate_chunks + document_chunks)
         self._db_mapping: SessionMapping = SessionMapping()  # read-write mapping DB
-        logger.info("ComplianceMapper: database sessions opened.")
+        logger.info("ComplianceMapper: database sessions opened (unified legal_vault.db).")
 
     # ------------------------------------------------------------------
     # Context-manager support
@@ -78,7 +84,7 @@ class ComplianceMapper:
 
     def close(self) -> None:
         """Close both database sessions and release all held connections."""
-        self._db_corp.close()
+        self._db_law.close()
         self._db_mapping.close()
         logger.info("ComplianceMapper: database sessions closed.")
 
@@ -281,15 +287,16 @@ def run_mapping_pipeline(chunks_list: Optional[List[str]] = None) -> None:
                 "run_mapping_pipeline: batch mode — %d text(s) supplied.", len(texts)
             )
         else:
-            db_corp = SessionCorp()
+            # Fetch corporate policy chunks from legal_vault.db (corporate_chunks table)
+            db_law = SessionLaw()
             try:
-                raw_chunks = crud_corporate.get_all_chunks(db=db_corp)
+                raw_chunks = crud_corporate.get_all_chunks(db=db_law)
             finally:
-                db_corp.close()
+                db_law.close()
 
             texts = [c["content"] for c in raw_chunks if c.get("content")]
             logger.info(
-                "run_mapping_pipeline: full-scan mode — %d chunk(s) fetched from DB.",
+                "run_mapping_pipeline: full-scan mode — %d chunk(s) fetched from legal_vault.db.",
                 len(texts),
             )
 

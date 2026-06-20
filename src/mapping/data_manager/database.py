@@ -2,7 +2,11 @@
 database.py
 -----------
 SQLAlchemy database setup for the Compliance Mapping pipeline.
-Manages connections for Corporate, Mapping, and Law databases.
+Manages connections for the Mapping bridge and the unified Legal Vault databases.
+
+NOTE: corporate_chunks.db has been retired. Both corporate policy chunks
+(corporate_chunks table) and country law chunks (document_chunks table) are
+now read from legal_vault.db via SessionLaw.
 """
 
 import os
@@ -17,27 +21,20 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 
 # --- 1. Engines & Session Factories ---
 
-# Engine for Corporate Data (Read-Only)
-engine_corp = create_engine(
-    f"sqlite:///{os.path.join(DATA_DIR, 'corporate_chunks.db')}", 
-    connect_args={"check_same_thread": False}
-)
-
 # Engine for Mapping Bridge (Read-Write)
 engine_mapping = create_engine(
-    f"sqlite:///{os.path.join(DATA_DIR, 'mapping.db')}", 
+    f"sqlite:///{os.path.join(DATA_DIR, 'mapping.db')}",
     connect_args={"check_same_thread": False}
 )
 
-# Engine for Country Law Data (Read-Only)
-# POINTED TO legal_vault.db AS THIS IS WHERE YOUR DATA RESIDES
+# Unified engine for both corporate policy chunks and country law chunks.
+# Reads the `corporate_chunks` and `document_chunks` tables inside legal_vault.db.
 engine_law = create_engine(
-    f"sqlite:///{os.path.join(DATA_DIR, 'legal_vault.db')}", 
+    f"sqlite:///{os.path.join(DATA_DIR, 'legal_vault.db')}",
     connect_args={"check_same_thread": False}
 )
 
 # Session factories
-SessionCorp = sessionmaker(autocommit=False, autoflush=False, bind=engine_corp)
 SessionMapping = sessionmaker(autocommit=False, autoflush=False, bind=engine_mapping)
 SessionLaw = sessionmaker(autocommit=False, autoflush=False, bind=engine_law)
 

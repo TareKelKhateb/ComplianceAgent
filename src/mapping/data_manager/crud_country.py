@@ -2,7 +2,11 @@
 crud_country.py
 ---------------
 Read-Only CRUD operations for Country Law chunks.
-Uses raw SQLAlchemy text queries to retrieve data without altering existing DB schemas.
+
+These functions query the `document_chunks` table inside legal_vault.db via
+a SessionLaw session. No category filter is required here because internal
+corporate policy chunks are stored in the separate `corporate_chunks` table
+within the same database, so document_chunks contains only country-law data.
 """
 
 from typing import List, Dict, Any, Optional

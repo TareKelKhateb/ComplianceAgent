@@ -2,7 +2,10 @@
 crud_corporate.py
 -----------------
 Read-Only CRUD operations for Corporate Policy chunks.
-Uses raw SQLAlchemy text queries to retrieve data without altering existing DB schemas.
+
+These functions query the `corporate_chunks` table that lives inside
+legal_vault.db. The session must be a SessionLaw instance — the retired
+corporate_chunks.db and its SessionCorp factory are no longer used.
 """
 
 from typing import List, Dict, Any, Optional
