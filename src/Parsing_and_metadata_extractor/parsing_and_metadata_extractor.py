@@ -144,7 +144,7 @@ class ParsingMetaDataExtractor:
     # STEP 2 — Query the storage layer for existing records
     # =========================================================================
 
-    def does_document_exist(self, document_id: str) -> StorageResult:
+    def does_document_exist(self, document_id: str, is_internal: bool = False) -> StorageResult:
         """
         Check whether a document ID is already present in the database.
 
@@ -154,12 +154,12 @@ class ParsingMetaDataExtractor:
             .success = True always (check_document_exists never raises).
             .data    = True if found, False if not.
         """
-        return self.metadata_store.check_document_exists(document_id=document_id)
+        return self.metadata_store.check_document_exists(document_id=document_id, is_internal=is_internal)
 
     # Keep the old name as an alias so existing callers don't break.
     does_document_exists = does_document_exist
 
-    def fetch_existing_metadata(self, document_id: str) -> StorageResult:
+    def fetch_existing_metadata(self, document_id: str, is_internal: bool = False) -> StorageResult:
         """
         Retrieve the latest stored version of a document by its ID.
 
@@ -169,7 +169,7 @@ class ParsingMetaDataExtractor:
             .success = True if a record was found, False otherwise.
             .data    = StoredDocument (latest version) on success, None on failure.
         """
-        versions_result = self.metadata_store.get_all_versions_by_id(document_id=document_id)
+        versions_result = self.metadata_store.get_all_versions_by_id(document_id=document_id, is_internal=is_internal)
 
         # get_all_versions_by_id returns success=False when no records exist.
         if not versions_result.success or not versions_result.data:
@@ -1428,8 +1428,10 @@ class ParsingMetaDataExtractor:
                         "download_status": "downloaded",
                     }
 
+                    is_internal = (doc_dict.get("category") or "").strip().lower() == "internal"
+
                     # ---- Step 3c: DB existence check -----------------------
-                    exist_result = self.does_document_exist(document_id=doc_id)
+                    exist_result = self.does_document_exist(document_id=doc_id, is_internal=is_internal)
 
                     # check_document_exists always returns StorageResult with
                     # .success=True; .data is bool. Guard anyway for safety.
@@ -1450,7 +1452,7 @@ class ParsingMetaDataExtractor:
                             "🗃️  Record found in database. Checking for changes..."
                         )
 
-                        meta_result = self.fetch_existing_metadata(document_id=doc_id)
+                        meta_result = self.fetch_existing_metadata(document_id=doc_id, is_internal=is_internal)
 
                         if not meta_result.success or meta_result.data is None:
                             self.logger.error(
@@ -1646,7 +1648,7 @@ class ParsingMetaDataExtractor:
 
             # ---- Step 3d: DB operations under self.db_lock -----------
             with self.db_lock:
-                exist_result = self.does_document_exist(document_id=doc_id)
+                exist_result = self.does_document_exist(document_id=doc_id, is_internal=is_internal)
                 if not exist_result.success:
                     worker_stats["failed"] += 1
                     return worker_stats
@@ -1655,7 +1657,7 @@ class ParsingMetaDataExtractor:
 
                 if document_exists:
                     self.logger.info("🗃️ Record found. Checking hash...")
-                    meta_result = self.fetch_existing_metadata(document_id=doc_id)
+                    meta_result = self.fetch_existing_metadata(document_id=doc_id, is_internal=is_internal)
                     
                     if not meta_result.success or meta_result.data is None:
                         worker_stats["failed"] += 1

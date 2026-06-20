@@ -5,6 +5,7 @@ LLM integration client for the Compliance Mapping pipeline.
 Uses a local Ollama instance to analyze policy relationships via qwen2.5:7b.
 """
 
+import os
 import json
 import logging
 import requests
@@ -16,8 +17,8 @@ from src.mapping.data_manager.schema import RelationshipType
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-OLLAMA_API_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "qwen2.5:7b"
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
+MODEL_NAME = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 PROMPT_FILE_PATH = Path(__file__).parent / "prompts.txt"
 
 

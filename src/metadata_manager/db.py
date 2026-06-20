@@ -403,11 +403,12 @@ def update_document_file_info(
     return get_document_by_id(db_path, document_id, is_internal=is_internal)
 
 
-def mark_download_failed(db_path: str, document_id: str) -> None:
+def mark_download_failed(db_path: str, document_id: str, is_internal: bool = False) -> None:
     """Mark a document record as failed to download."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         conn.execute(
-            "UPDATE documents SET download_status = 'failed' WHERE id = ? AND is_last = 1",
+            f"UPDATE {table} SET download_status = 'failed' WHERE id = ? AND is_last = 1",
             (document_id,),
         )
         conn.commit()
@@ -438,11 +439,12 @@ def get_latest_by_id(db_path: str, document_id: str, is_internal: bool = False) 
     return _row_to_document(row) if row else None
 
 
-def get_all_versions_by_id(db_path: str, document_id: str) -> list[StoredDocument]:
+def get_all_versions_by_id(db_path: str, document_id: str, is_internal: bool = False) -> list[StoredDocument]:
     """Fetch all versions of a document by ID, ordered oldest → newest."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE id = ? ORDER BY version ASC",
+            f"SELECT * FROM {table} WHERE id = ? ORDER BY version ASC",
             (document_id,),
         ).fetchall()
     return [_row_to_document(r) for r in rows]
@@ -459,21 +461,23 @@ def get_latest_by_url(db_path: str, file_url: str, is_internal: bool = False) ->
     return _row_to_document(row) if row else None
 
 
-def get_all_versions_by_url(db_path: str, file_url: str) -> list[StoredDocument]:
+def get_all_versions_by_url(db_path: str, file_url: str, is_internal: bool = False) -> list[StoredDocument]:
     """Fetch all versions of a document by URL, ordered oldest → newest."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE file_url = ? ORDER BY version ASC",
+            f"SELECT * FROM {table} WHERE file_url = ? ORDER BY version ASC",
             (file_url,),
         ).fetchall()
     return [_row_to_document(r) for r in rows]
 
 
-def get_all_latest_documents(db_path: str) -> list[StoredDocument]:
+def get_all_latest_documents(db_path: str, is_internal: bool = False) -> list[StoredDocument]:
     """Fetch all current (is_last=True) documents — useful for Tier 2 handoff."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE is_last = 1 ORDER BY created_at DESC"
+            f"SELECT * FROM {table} WHERE is_last = 1 ORDER BY created_at DESC"
         ).fetchall()
     return [_row_to_document(r) for r in rows]
 
@@ -490,6 +494,7 @@ def search_by_metadata(
     subcategory: Optional[str] = None,
     download_status: Optional[str] = None,
     latest_only: bool = True,
+    is_internal: bool = False,
 ) -> list[StoredDocument]:
     """
     Query documents by any combination of metadata fields.
@@ -530,25 +535,27 @@ def search_by_metadata(
         params.append(download_status)
 
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    table = "internal_documents" if is_internal else "documents"
 
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            f"SELECT * FROM documents {where_clause} ORDER BY created_at DESC",
+            f"SELECT * FROM {table} {where_clause} ORDER BY created_at DESC",
             params,
         ).fetchall()
     return [_row_to_document(r) for r in rows]
 
 
 def get_documents_by_download_status(
-    db_path: str, status: str
+    db_path: str, status: str, is_internal: bool = False
 ) -> list[StoredDocument]:
     """
     Get all documents with a given download_status.
     Useful for retrying failed downloads: get_documents_by_download_status(db, "failed")
     """
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE download_status = ? ORDER BY created_at DESC",
+            f"SELECT * FROM {table} WHERE download_status = ? ORDER BY created_at DESC",
             (status,),
         ).fetchall()
     return [_row_to_document(r) for r in rows]
@@ -691,6 +698,8 @@ def get_documents_by_custom_filter(
     """
     Query documents by category with optional subcategory, title, and is_last filters.
     """
+    is_internal = (category or "").strip().lower() == "internal"
+    table = "internal_documents" if is_internal else "documents"
     conditions = ["category = ?"]
     params = [category]
 
@@ -705,7 +714,7 @@ def get_documents_by_custom_filter(
         params.append(1 if is_last else 0)
 
     where_clause = "WHERE " + " AND ".join(conditions)
-    query = f"SELECT * FROM documents {where_clause} ORDER BY created_at DESC"
+    query = f"SELECT * FROM {table} {where_clause} ORDER BY created_at DESC"
 
     with _get_connection(db_path) as conn:
         rows = conn.execute(query, params).fetchall()

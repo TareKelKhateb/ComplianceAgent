@@ -520,7 +520,7 @@ class MetadataStore:
     # READ / QUERY
     # =======================================================================
 
-    def get_document_by_id(self, doc_id: str) -> StorageResult:
+    def get_document_by_id(self, doc_id: str, is_internal: bool = False) -> StorageResult:
         """
         Retrieve a single document record from the database by its unique custom ID.
 
@@ -532,6 +532,7 @@ class MetadataStore:
             doc_id (str): The unique custom ID of the document to retrieve
                           (e.g. ``"01_banking_laws"``).  This matches the ``id``
                           primary key column in the ``documents`` table.
+            is_internal (bool): If True, queries the internal_documents table instead.
 
         Returns:
             StorageResult:
@@ -552,7 +553,8 @@ class MetadataStore:
             else:
                 print(result.message)
         """
-        query = "SELECT * FROM documents WHERE id = ? LIMIT 1"
+        table = self._docs_table(is_internal)
+        query = f"SELECT * FROM {table} WHERE id = ? LIMIT 1"
 
         try:
             with self._get_connection() as conn:
@@ -566,7 +568,7 @@ class MetadataStore:
                 return StorageResult(
                     success=False,
                     message=(
-                        f"Document not found: no record exists with id='{doc_id}'. "
+                        f"Document not found: no record exists with id='{doc_id}' in table '{table}'. "
                         "Please verify the ID and try again."
                     ),
                     data=None,
@@ -613,7 +615,7 @@ class MetadataStore:
             return StorageResult(
                 success=True,
                 message=(
-                    f"Document retrieved successfully: id='{doc_id}' "
+                    f"Document retrieved successfully from '{table}': id='{doc_id}' "
                     f"(version={document.version}, "
                     f"ocr_status='{document.ocr_status}')."
                 ),
@@ -639,14 +641,14 @@ class MetadataStore:
                 data=None,
             )
 
-    def get_latest_document_by_url(self, file_url: str) -> StorageResult:
+    def get_latest_document_by_url(self, file_url: str, is_internal: bool = False) -> StorageResult:
         """
         Get the latest version of a document by URL.
 
         Returns:
             StorageResult where .data is StoredDocument
         """
-        doc = get_latest_by_url(self.db_path, file_url)
+        doc = get_latest_by_url(self.db_path, file_url, is_internal=is_internal)
         if not doc:
             return StorageResult(
                 success=False,
@@ -658,14 +660,14 @@ class MetadataStore:
             data=doc,
         )
 
-    def get_all_versions_by_url(self, file_url: str) -> StorageResult:
+    def get_all_versions_by_url(self, file_url: str, is_internal: bool = False) -> StorageResult:
         """
         Get all versions of a document by URL, ordered v1 → vN.
 
         Returns:
             StorageResult where .data is list of StoredDocument
         """
-        docs = get_all_versions_by_url(self.db_path, file_url)
+        docs = get_all_versions_by_url(self.db_path, file_url, is_internal=is_internal)
         if not docs:
             return StorageResult(
                 success=False,
@@ -677,14 +679,14 @@ class MetadataStore:
             data=docs,
         )
 
-    def get_latest_document_by_id(self, document_id: str) -> StorageResult:
+    def get_latest_document_by_id(self, document_id: str, is_internal: bool = False) -> StorageResult:
         """
         Get the latest version of a document by ID.
 
         Returns:
             StorageResult where .data is StoredDocument
         """
-        doc = get_latest_by_id(self.db_path, document_id)
+        doc = get_latest_by_id(self.db_path, document_id, is_internal=is_internal)
         if not doc:
             return StorageResult(
                 success=False,
@@ -696,14 +698,14 @@ class MetadataStore:
             data=doc,
         )
 
-    def get_all_versions_by_id(self, document_id: str) -> StorageResult:
+    def get_all_versions_by_id(self, document_id: str, is_internal: bool = False) -> StorageResult:
         """
         Get all versions of a document by ID, ordered oldest → newest.
 
         Returns:
             StorageResult where .data is list of StoredDocument
         """
-        docs = get_all_versions_by_id(self.db_path, document_id)
+        docs = get_all_versions_by_id(self.db_path, document_id, is_internal=is_internal)
         if not docs:
             return StorageResult(
                 success=False,
@@ -715,7 +717,7 @@ class MetadataStore:
             data=docs,
         )
 
-    def get_all_latest_documents(self) -> StorageResult:
+    def get_all_latest_documents(self, is_internal: Optional[bool] = None) -> StorageResult:
         """
         Get the latest version of every document in the DB.
         This is the main handoff to Tier 2 (chunking & vector DB).
@@ -723,21 +725,27 @@ class MetadataStore:
         Returns:
             StorageResult where .data is list of StoredDocument
         """
-        docs = get_all_latest_documents(self.db_path)
+        if is_internal is None:
+            docs = get_all_latest_documents(self.db_path, is_internal=False) + get_all_latest_documents(self.db_path, is_internal=True)
+        else:
+            docs = get_all_latest_documents(self.db_path, is_internal=is_internal)
         return StorageResult(
             success=True,
             message=f"Retrieved {len(docs)} document(s) (latest versions only).",
             data=docs,
         )
 
-    def get_all_documents_all_versions(self) -> StorageResult:
+    def get_all_documents_all_versions(self, is_internal: Optional[bool] = None) -> StorageResult:
         """
         Get every record in the DB — all versions of all documents.
 
         Returns:
             StorageResult where .data is list of StoredDocument
         """
-        docs = search_by_metadata(self.db_path, latest_only=False)
+        if is_internal is None:
+            docs = search_by_metadata(self.db_path, latest_only=False, is_internal=False) + search_by_metadata(self.db_path, latest_only=False, is_internal=True)
+        else:
+            docs = search_by_metadata(self.db_path, latest_only=False, is_internal=is_internal)
         return StorageResult(
             success=True,
             message=f"Retrieved {len(docs)} total record(s) (all versions included).",
@@ -754,6 +762,7 @@ class MetadataStore:
         language:        Optional[str] = None,
         download_status: Optional[str] = None,
         latest_only:     bool = True,
+        is_internal:     bool = False,
     ) -> StorageResult:
         """
         Search documents by any combination of metadata fields.
@@ -779,6 +788,7 @@ class MetadataStore:
             language=language,
             download_status=download_status,
             latest_only=latest_only,
+            is_internal=is_internal,
         )
         active_filters = {k: v for k, v in {
             "title": title, "document_type": document_type,
@@ -835,7 +845,7 @@ class MetadataStore:
 
         return docs
 
-    def check_document_exists(self, document_id: str = None, file_url: str = None, sha256_hash: str = None) -> StorageResult:
+    def check_document_exists(self, document_id: str = None, file_url: str = None, sha256_hash: str = None, is_internal: bool = False) -> StorageResult:
         """
         Check if a document already exists by ID, URL, or hash.
 
@@ -848,13 +858,14 @@ class MetadataStore:
                 message="Provide at least one of: document_id, file_url, sha256_hash.",
             )
 
+        table = self._docs_table(is_internal)
         with self._get_connection() as conn:
             if document_id:
-                row = conn.execute("SELECT 1 FROM documents WHERE id = ? LIMIT 1", (document_id,)).fetchone()
+                row = conn.execute(f"SELECT 1 FROM {table} WHERE id = ? LIMIT 1", (document_id,)).fetchone()
             elif file_url:
-                row = conn.execute("SELECT 1 FROM documents WHERE file_url = ? LIMIT 1", (file_url,)).fetchone()
+                row = conn.execute(f"SELECT 1 FROM {table} WHERE file_url = ? LIMIT 1", (file_url,)).fetchone()
             else:
-                row = conn.execute("SELECT 1 FROM documents WHERE sha256_hash = ? LIMIT 1", (sha256_hash,)).fetchone()
+                row = conn.execute(f"SELECT 1 FROM {table} WHERE sha256_hash = ? LIMIT 1", (sha256_hash,)).fetchone()
             exists = row is not None
 
         return StorageResult(
@@ -1077,17 +1088,17 @@ class MetadataStore:
         """Return the chunks table name based on document type."""
         return "corporate_chunks" if is_internal else "document_chunks"
 
-    def _promote_previous_version(self, file_url: str) -> None:
+    def _promote_previous_version(self, file_url: str, is_internal: bool = False) -> None:
         """After deleting the latest version, promote the next newest to is_last=1."""
         # Re-query AFTER the delete so we only see remaining versions
-        remaining = get_all_versions_by_url(self.db_path, file_url)
+        remaining = get_all_versions_by_url(self.db_path, file_url, is_internal=is_internal)
         if not remaining:
             return
         # Check if any version is already marked is_last (shouldn't be, but safe)
         if any(d.is_last for d in remaining):
             return
         newest = max(remaining, key=lambda d: d.version)
-        update_document_file_info(self.db_path, newest.id, {"is_last": 1})
+        update_document_file_info(self.db_path, newest.id, {"is_last": 1}, is_internal=is_internal)
 
     def save_documents_to_db(db_path: str, docs_list: list[StoredDocument]) -> BatchStorageResult:
         """
@@ -1505,15 +1516,16 @@ class MetadataStore:
                 except Exception as e:
                     return StorageResult(success=False, message=f"Failed to save chunks: {str(e)}")
 
-    def get_chunks_by_version(self, doc_id: str, version: int) -> List[Dict[str, Any]]:
+    def get_chunks_by_version(self, doc_id: str, version: int, is_internal: bool = False) -> List[Dict[str, Any]]:
         """
         Retrieves all chunks belonging to a specific version of a document.
         Useful for auditing or restoring old data.
         """
-        query = """
+        table = self._chunks_table(is_internal)
+        query = f"""
             SELECT chunk_id, chunk_index, content, bbox, page_number, chunk_hash, 
                    is_active, version, created_at, change_type, old_content
-            FROM document_chunks 
+            FROM {table} 
             WHERE doc_id = ? AND version = ?
             ORDER BY chunk_index ASC
         """
@@ -1567,14 +1579,15 @@ class MetadataStore:
             cursor = conn.execute(query, (doc_id,))
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_chunk_history(self, doc_id: str, chunk_index: int) -> List[Dict[str, Any]]:
+    def get_chunk_history(self, doc_id: str, chunk_index: int, is_internal: bool = False) -> List[Dict[str, Any]]:
         """
         Retrieves all historical versions of a specific chunk.
         Allows the LLM to explain what changed between versions.
         """
-        query = """
+        table = self._chunks_table(is_internal)
+        query = f"""
             SELECT version, content, change_type, old_content, created_at
-            FROM document_chunks 
+            FROM {table} 
             WHERE doc_id = ? AND chunk_index = ?
             ORDER BY version DESC
         """
@@ -1583,14 +1596,15 @@ class MetadataStore:
             cursor = conn.execute(query, (doc_id, chunk_index))
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_version_changes(self, doc_id: str, version: int) -> List[Dict[str, Any]]:
+    def get_version_changes(self, doc_id: str, version: int, is_internal: bool = False) -> List[Dict[str, Any]]:
         """
         Retrieves only the modified or added chunks for a specific version.
         Used for generating 'What's New' summaries via LLM.
         """
-        query = """
+        table = self._chunks_table(is_internal)
+        query = f"""
             SELECT chunk_index, content, change_type, old_content
-            FROM document_chunks 
+            FROM {table} 
             WHERE doc_id = ? AND version = ? AND change_type IN ('modified', 'added', 'deleted')
         """
         with self._get_connection() as conn:
