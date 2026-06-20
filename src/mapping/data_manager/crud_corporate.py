@@ -44,7 +44,11 @@ def get_all_chunks(db: Session) -> List[Dict[str, Any]]:
     Returns:
         A list of dictionaries containing chunk_hash, content, and metadata.
     """
-    query = text("SELECT chunk_hash, content, metadata FROM corporate_chunks")
+    query = text("""
+        SELECT chunk_hash, content, doc_id, page_number 
+        FROM corporate_chunks
+        WHERE is_active = 1
+    """)
     try:
         results = db.execute(query).mappings().all()
         return [dict(row) for row in results]
