@@ -73,11 +73,15 @@ def analyze_with_llm(context: str) -> Tuple[RelationshipType, str, float]:
     payload = {
         "model": MODEL_NAME,
         "prompt": final_prompt,
-        "stream": False
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 2048
+        }
     }
     
     try:
-        response = requests.post(OLLAMA_API_URL, json=payload, timeout=120)
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=300)
         response.raise_for_status()
         
         # Ollama returns a JSON response where the generated text is in the 'response' key
