@@ -91,8 +91,8 @@ class EmbeddingSemanticChunker(BaseChunker):
 
     def __init__(
         self,
-        model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-        similarity_threshold: float = 0.45,
+        model_name: str = "BAAI/bge-m3",  # New default: higher accuracy for Arabic & English texts
+        similarity_threshold: float = 0.40,
         max_chunk_words: int = 500,
         min_chunk_words: int = 30,
     ) -> None:
