@@ -38,6 +38,7 @@ from src.document_processor.pipeline_manager import OCRPipeline
 from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
 import requests
 from src.Orchetrator.email_sender import send_review_email
+from src.mapping.orchestrator import run_mapping_pipeline
 
 # ---------------------------------------------------------------------------
 # Logging — coloured console output (stdlib only, no extra packages)
@@ -392,6 +393,9 @@ class Orchestrator:
 
         self._stage_ingest([record])
         self._stage_ocr()
+        
+        logger.info("Starting Compliance Mapping pipeline...")
+        run_mapping_pipeline()
         return None
 
     def run_with_data(self, records: list[dict]) -> None:
@@ -420,6 +424,10 @@ class Orchestrator:
 
         # Stage 4 — OCR & chunking for changed documents
         self._stage_ocr()
+
+        # Run Compliance Mapping
+        logger.info("Starting Compliance Mapping pipeline...")
+        run_mapping_pipeline()
 
         logger.info("=" * 60)
         logger.info("PIPELINE WITH PRE-APPROVED DATA FINISHED")
@@ -497,7 +505,9 @@ class Orchestrator:
         # Stage 4 — OCR & chunking for changed documents
         self._stage_ocr()
 
-        # VDB 
+        # Run Compliance Mapping
+        logger.info("Starting Compliance Mapping pipeline...")
+        run_mapping_pipeline()
 
         logger.info("=" * 60)
         logger.info("ORCHESTRATION CYCLE FINISHED")
