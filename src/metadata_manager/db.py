@@ -260,7 +260,7 @@ def init_db(db_path: str) -> None:
 
 def check_hash(db_path: str, document_id: str, sha256_hash: str, is_internal: bool = False) -> dict:
     """
-    Check if a document ID + hash combination already exists in the DB.
+    Check if a document ID + hash combination already exists in the DB as the latest version.
 
     Returns a plain dict with keys:
     - "action"       : "skip" | "insert"
@@ -269,20 +269,20 @@ def check_hash(db_path: str, document_id: str, sha256_hash: str, is_internal: bo
     """
     table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
-        # Check for exact match (same ID AND same hash)
+        # Check for exact match on the latest version (same ID AND same hash as the current latest)
         row = conn.execute(
-            f"SELECT * FROM {table} WHERE id = ? AND sha256_hash = ? LIMIT 1",
+            f"SELECT * FROM {table} WHERE id = ? AND sha256_hash = ? AND is_last = 1 LIMIT 1",
             (document_id, sha256_hash),
         ).fetchone()
 
         if row:
             return {
                 "action": "skip",
-                "reason": "Exact duplicate — same ID and same hash already stored.",
+                "reason": "Exact duplicate — same ID and same hash already stored as latest version.",
                 "new_version": row["version"],
             }
 
-        # Check if ID exists at all (different hash = content changed)
+        # Check if ID exists at all (different hash = content changed compared to current latest)
         latest_row = conn.execute(
             f"SELECT * FROM {table} WHERE id = ? AND is_last = 1 LIMIT 1",
             (document_id,),
