@@ -32,13 +32,6 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.metadata_manager.metadata_store import MetadataStore
-from src.Parsing_and_metadata_extractor.parsing_and_metadata_extractor import ParsingMetaDataExtractor
-from src.document_processor.pipeline_manager import OCRPipeline
-from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
-import requests
-from src.Orchetrator.email_sender import send_review_email
-
 # ---------------------------------------------------------------------------
 # Logging — coloured console output (stdlib only, no extra packages)
 # ---------------------------------------------------------------------------
@@ -114,6 +107,17 @@ def _setup_logging(level: int = logging.INFO) -> None:
 
 _setup_logging()
 logger = logging.getLogger("Orchestrator")
+
+# ---------------------------------------------------------------------------
+# Sibling imports (imported after logging setup to ensure colored formatting takes precedence)
+# ---------------------------------------------------------------------------
+from src.metadata_manager.metadata_store import MetadataStore
+from src.Parsing_and_metadata_extractor.parsing_and_metadata_extractor import ParsingMetaDataExtractor
+from src.document_processor.pipeline_manager import OCRPipeline
+from src.Scrapper.ScrapperClient import ScrapperClient, ScrapperClientError
+import requests
+from src.Orchetrator.email_sender import send_review_email
+from src.mapping.orchestrator import run_mapping_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +396,9 @@ class Orchestrator:
 
         self._stage_ingest([record])
         self._stage_ocr()
+        
+        logger.info("Starting Compliance Mapping pipeline...")
+        run_mapping_pipeline()
         return None
 
     def run_with_data(self, records: list[dict]) -> None:
@@ -420,6 +427,10 @@ class Orchestrator:
 
         # Stage 4 — OCR & chunking for changed documents
         self._stage_ocr()
+
+        # Run Compliance Mapping
+        logger.info("Starting Compliance Mapping pipeline...")
+        run_mapping_pipeline()
 
         logger.info("=" * 60)
         logger.info("PIPELINE WITH PRE-APPROVED DATA FINISHED")
@@ -497,7 +508,9 @@ class Orchestrator:
         # Stage 4 — OCR & chunking for changed documents
         self._stage_ocr()
 
-        # VDB 
+        # Run Compliance Mapping
+        logger.info("Starting Compliance Mapping pipeline...")
+        run_mapping_pipeline()
 
         logger.info("=" * 60)
         logger.info("ORCHESTRATION CYCLE FINISHED")
