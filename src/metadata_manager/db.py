@@ -90,6 +90,7 @@ def init_db(db_path: str) -> None:
                         file_url TEXT NOT NULL,
                         sha256_hash TEXT NOT NULL,
                         created_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
                         PRIMARY KEY (id, version)
                     )
                 """)
@@ -141,6 +142,7 @@ def init_db(db_path: str) -> None:
                     file_url TEXT NOT NULL,
                     sha256_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY (id, version)
                 )
             """)
@@ -174,6 +176,24 @@ def init_db(db_path: str) -> None:
                 # Column already exists, safe to ignore
                 pass
 
+        # Create internal_documents table with the same schema as documents
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS internal_documents (
+                id TEXT NOT NULL,
+                file_url TEXT NOT NULL,
+                sha256_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (id, version)
+            )
+        """)
+        
+        for col_name, col_type in new_columns:
+            try:
+                conn.execute(f"ALTER TABLE internal_documents ADD COLUMN {col_name} {col_type}")
+            except sqlite3.OperationalError:
+                pass
+
         # 3. Create the 'document_chunks' table to store OCR output and text segments
         conn.execute("""
             CREATE TABLE IF NOT EXISTS document_chunks (
@@ -190,7 +210,7 @@ def init_db(db_path: str) -> None:
                 created_at       TEXT,     
                 change_type      TEXT    DEFAULT 'unchanged',
                 old_content      TEXT,             
-                FOREIGN KEY (doc_id) REFERENCES documents (id) ON DELETE CASCADE
+                FOREIGN KEY (doc_id, version) REFERENCES documents (id, version) ON DELETE CASCADE
             )
         """)
 
@@ -200,9 +220,36 @@ def init_db(db_path: str) -> None:
         except sqlite3.OperationalError:
             pass
 
+        # Create corporate_chunks table to store OCR output and segments of internal documents
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS corporate_chunks (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc_id           TEXT NOT NULL,
+                chunk_id         TEXT,     -- New deterministic ID field
+                chunk_index      INTEGER NOT NULL,
+                content          TEXT    NOT NULL,
+                bbox             TEXT,
+                page_number      INTEGER,
+                chunk_hash       TEXT    NOT NULL,
+                is_active        INTEGER NOT NULL DEFAULT 1, 
+                version          INTEGER NOT NULL DEFAULT 1, 
+                created_at       TEXT,     
+                change_type      TEXT    DEFAULT 'unchanged',
+                old_content      TEXT,             
+                FOREIGN KEY (doc_id, version) REFERENCES internal_documents (id, version) ON DELETE CASCADE
+            )
+        """)
+
+        try:
+            conn.execute("ALTER TABLE corporate_chunks ADD COLUMN chunk_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         # 4. Create performance indices for faster queries
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ocr_status ON documents (ocr_status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks (doc_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_internal_docs_ocr ON internal_documents (ocr_status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_corp_chunks_doc_id ON corporate_chunks (doc_id)")
 
         conn.commit()
 
@@ -211,32 +258,33 @@ def init_db(db_path: str) -> None:
 # Hash Check  (core deduplication logic)
 # ---------------------------------------------------------------------------
 
-def check_hash(db_path: str, document_id: str, sha256_hash: str) -> dict:
+def check_hash(db_path: str, document_id: str, sha256_hash: str, is_internal: bool = False) -> dict:
     """
-    Check if a document ID + hash combination already exists in the DB.
+    Check if a document ID + hash combination already exists in the DB as the latest version.
 
     Returns a plain dict with keys:
     - "action"       : "skip" | "insert"
     - "reason"       : human-readable explanation
     - "new_version"  : version number to use if inserting
     """
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
-        # Check for exact match (same ID AND same hash)
+        # Check for exact match on the latest version (same ID AND same hash as the current latest)
         row = conn.execute(
-            "SELECT * FROM documents WHERE id = ? AND sha256_hash = ? LIMIT 1",
+            f"SELECT * FROM {table} WHERE id = ? AND sha256_hash = ? AND is_last = 1 LIMIT 1",
             (document_id, sha256_hash),
         ).fetchone()
 
         if row:
             return {
                 "action": "skip",
-                "reason": "Exact duplicate — same ID and same hash already stored.",
+                "reason": "Exact duplicate — same ID and same hash already stored as latest version.",
                 "new_version": row["version"],
             }
 
-        # Check if ID exists at all (different hash = content changed)
+        # Check if ID exists at all (different hash = content changed compared to current latest)
         latest_row = conn.execute(
-            "SELECT * FROM documents WHERE id = ? AND is_last = 1 LIMIT 1",
+            f"SELECT * FROM {table} WHERE id = ? AND is_last = 1 LIMIT 1",
             (document_id,),
         ).fetchone()
 
@@ -263,6 +311,7 @@ def insert_document(
     db_path: str,
     data: dict,
     version: int,
+    is_internal: bool = False,
 ) -> StoredDocument:
     """
     Insert a new document record.
@@ -274,18 +323,19 @@ def insert_document(
     file_url    = data.get("file_url", "").strip()
     sha256_hash = data.get("sha256_hash", "").strip()
     now = datetime.now(timezone.utc).isoformat()
+    table = "internal_documents" if is_internal else "documents"
 
     with _get_connection(db_path) as conn:
         # Atomic transaction: demote old latest → insert new one by ID
         if version > 1:
             conn.execute(
-                "UPDATE documents SET is_last = 0 WHERE id = ? AND is_last = 1",
+                f"UPDATE {table} SET is_last = 0 WHERE id = ? AND is_last = 1",
                 (document_id,),
             )
 
         cursor = conn.execute(
-            """
-            INSERT INTO documents (
+            f"""
+            INSERT INTO {table} (
                 id, file_url, title, document_type, issuing_entity,
                 document_number, year, date, language, category, subcategory,
                 sha256_hash, version, is_last,
@@ -314,13 +364,14 @@ def insert_document(
         )
         conn.commit()
 
-    return get_document_by_id(db_path, document_id)
+    return get_document_by_id(db_path, document_id, is_internal=is_internal)
 
 
 def update_document_file_info(
     db_path: str,
     document_id: str,
     fields: dict,
+    is_internal: bool = False,
 ) -> Optional[StoredDocument]:
     """
     Update any combination of document fields by ID.
@@ -335,27 +386,29 @@ def update_document_file_info(
         "year", "date", "language", "is_last",
     }
     updates = {k: v for k, v in fields.items() if k in ALLOWED}
+    table = "internal_documents" if is_internal else "documents"
     if not updates:
-        return get_document_by_id(db_path, document_id)
+        return get_document_by_id(db_path, document_id, is_internal=is_internal)
 
     set_clause = ", ".join(f"{col} = ?" for col in updates)
     values = list(updates.values()) + [document_id]
 
     with _get_connection(db_path) as conn:
         conn.execute(
-            f"UPDATE documents SET {set_clause} WHERE id = ? AND is_last = 1",
+            f"UPDATE {table} SET {set_clause} WHERE id = ? AND is_last = 1",
             values,
         )
         conn.commit()
 
-    return get_document_by_id(db_path, document_id)
+    return get_document_by_id(db_path, document_id, is_internal=is_internal)
 
 
-def mark_download_failed(db_path: str, document_id: str) -> None:
+def mark_download_failed(db_path: str, document_id: str, is_internal: bool = False) -> None:
     """Mark a document record as failed to download."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         conn.execute(
-            "UPDATE documents SET download_status = 'failed' WHERE id = ? AND is_last = 1",
+            f"UPDATE {table} SET download_status = 'failed' WHERE id = ? AND is_last = 1",
             (document_id,),
         )
         conn.commit()
@@ -365,60 +418,66 @@ def mark_download_failed(db_path: str, document_id: str) -> None:
 # Read operations
 # ---------------------------------------------------------------------------
 
-def get_document_by_id(db_path: str, document_id: str) -> Optional[StoredDocument]:
+def get_document_by_id(db_path: str, document_id: str, is_internal: bool = False) -> Optional[StoredDocument]:
     """Fetch the latest version of a document by its ID."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM documents WHERE id = ? AND is_last = 1 LIMIT 1", (document_id,)
+            f"SELECT * FROM {table} WHERE id = ? AND is_last = 1 LIMIT 1", (document_id,)
         ).fetchone()
     return _row_to_document(row) if row else None
 
 
-def get_latest_by_id(db_path: str, document_id: str) -> Optional[StoredDocument]:
+def get_latest_by_id(db_path: str, document_id: str, is_internal: bool = False) -> Optional[StoredDocument]:
     """Fetch the latest (is_last=True) version of a document by ID."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM documents WHERE id = ? AND is_last = 1 LIMIT 1",
+            f"SELECT * FROM {table} WHERE id = ? AND is_last = 1 LIMIT 1",
             (document_id,),
         ).fetchone()
     return _row_to_document(row) if row else None
 
 
-def get_all_versions_by_id(db_path: str, document_id: str) -> list[StoredDocument]:
+def get_all_versions_by_id(db_path: str, document_id: str, is_internal: bool = False) -> list[StoredDocument]:
     """Fetch all versions of a document by ID, ordered oldest → newest."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE id = ? ORDER BY version ASC",
+            f"SELECT * FROM {table} WHERE id = ? ORDER BY version ASC",
             (document_id,),
         ).fetchall()
     return [_row_to_document(r) for r in rows]
 
 
-def get_latest_by_url(db_path: str, file_url: str) -> Optional[StoredDocument]:
+def get_latest_by_url(db_path: str, file_url: str, is_internal: bool = False) -> Optional[StoredDocument]:
     """Fetch the latest (is_last=True) version of a document by URL."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM documents WHERE file_url = ? AND is_last = 1 LIMIT 1",
+            f"SELECT * FROM {table} WHERE file_url = ? AND is_last = 1 LIMIT 1",
             (file_url,),
         ).fetchone()
     return _row_to_document(row) if row else None
 
 
-def get_all_versions_by_url(db_path: str, file_url: str) -> list[StoredDocument]:
+def get_all_versions_by_url(db_path: str, file_url: str, is_internal: bool = False) -> list[StoredDocument]:
     """Fetch all versions of a document by URL, ordered oldest → newest."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE file_url = ? ORDER BY version ASC",
+            f"SELECT * FROM {table} WHERE file_url = ? ORDER BY version ASC",
             (file_url,),
         ).fetchall()
     return [_row_to_document(r) for r in rows]
 
 
-def get_all_latest_documents(db_path: str) -> list[StoredDocument]:
+def get_all_latest_documents(db_path: str, is_internal: bool = False) -> list[StoredDocument]:
     """Fetch all current (is_last=True) documents — useful for Tier 2 handoff."""
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE is_last = 1 ORDER BY created_at DESC"
+            f"SELECT * FROM {table} WHERE is_last = 1 ORDER BY created_at DESC"
         ).fetchall()
     return [_row_to_document(r) for r in rows]
 
@@ -435,6 +494,7 @@ def search_by_metadata(
     subcategory: Optional[str] = None,
     download_status: Optional[str] = None,
     latest_only: bool = True,
+    is_internal: bool = False,
 ) -> list[StoredDocument]:
     """
     Query documents by any combination of metadata fields.
@@ -475,25 +535,27 @@ def search_by_metadata(
         params.append(download_status)
 
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    table = "internal_documents" if is_internal else "documents"
 
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            f"SELECT * FROM documents {where_clause} ORDER BY created_at DESC",
+            f"SELECT * FROM {table} {where_clause} ORDER BY created_at DESC",
             params,
         ).fetchall()
     return [_row_to_document(r) for r in rows]
 
 
 def get_documents_by_download_status(
-    db_path: str, status: str
+    db_path: str, status: str, is_internal: bool = False
 ) -> list[StoredDocument]:
     """
     Get all documents with a given download_status.
     Useful for retrying failed downloads: get_documents_by_download_status(db, "failed")
     """
+    table = "internal_documents" if is_internal else "documents"
     with _get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE download_status = ? ORDER BY created_at DESC",
+            f"SELECT * FROM {table} WHERE download_status = ? ORDER BY created_at DESC",
             (status,),
         ).fetchall()
     return [_row_to_document(r) for r in rows]
@@ -636,6 +698,8 @@ def get_documents_by_custom_filter(
     """
     Query documents by category with optional subcategory, title, and is_last filters.
     """
+    is_internal = (category or "").strip().lower() == "internal"
+    table = "internal_documents" if is_internal else "documents"
     conditions = ["category = ?"]
     params = [category]
 
@@ -650,7 +714,7 @@ def get_documents_by_custom_filter(
         params.append(1 if is_last else 0)
 
     where_clause = "WHERE " + " AND ".join(conditions)
-    query = f"SELECT * FROM documents {where_clause} ORDER BY created_at DESC"
+    query = f"SELECT * FROM {table} {where_clause} ORDER BY created_at DESC"
 
     with _get_connection(db_path) as conn:
         rows = conn.execute(query, params).fetchall()

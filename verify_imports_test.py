@@ -17,33 +17,35 @@ files_to_import = [
     "document_processor.chunkers.overlapping_chunker",
     "document_processor.chunkers.semantic_chunker",
     "document_processor.chunkers.text_formatter",
+    "document_processor.chunkers.embedding_semantic_chunker",
     "document_processor.semantic_hasher",
     "document_processor.diff_engine",
-    "document_processor.pipeline_manager_2"
+    "document_processor.pipeline_manager"
 ]
 
-success_count = 0
-fail_count = 0
+if __name__ == "__main__":
+    success_count = 0
+    fail_count = 0
 
-print(f"Project Root: {project_root}")
-print(f"Source Path: {src_path}")
-print("-" * 30)
+    print(f"Project Root: {project_root}")
+    print(f"Source Path: {src_path}")
+    print("-" * 30)
 
-for module_name in files_to_import:
-    try:
-        # Use importlib for more control if needed, but __import__ is fine
-        __import__(module_name)
-        print(f"[OK]  Imported {module_name}")
-        success_count += 1
-    except Exception as e:
-        print(f"[FAIL] Could not import {module_name}")
-        print(f"       Error: {e}")
-        fail_count += 1
+    for module_name in files_to_import:
+        try:
+            # Use importlib for more control if needed, but __import__ is fine
+            __import__(module_name)
+            print(f"[OK]  Imported {module_name}")
+            success_count += 1
+        except Exception as e:
+            print(f"[FAIL] Could not import {module_name}")
+            print(f"       Error: {e}")
+            fail_count += 1
 
-print("-" * 30)
-print(f"Total: {success_count + fail_count} | Success: {success_count} | Failed: {fail_count}")
+    print("-" * 30)
+    print(f"Total: {success_count + fail_count} | Success: {success_count} | Failed: {fail_count}")
 
-if fail_count > 0:
-    sys.exit(1)
-else:
-    sys.exit(0)
+    if fail_count > 0:
+        sys.exit(1)
+    else:
+        sys.exit(0)

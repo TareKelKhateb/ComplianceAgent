@@ -36,12 +36,16 @@ class SemanticHasher:
                 normalized_content: str = self._normalize_text(raw_content, is_table=is_table)
                 chunk['content'] = normalized_content
                 
-                # Extract the legal article number ("45", "12", or "0" if not detected)
-                article_num: str = self.article_parser.extract_article_id(normalized_content)
-                    
-                # Mapping the strategic legal ID (Only doc_id and article_num, no index)
+                # Determine document type (Internal vs External/Legal) to assign appropriate chunk ID format
+                is_internal = chunk.get('metadata', {}).get('type') == 'embedding_semantic_block'
                 doc_id: str = chunk.get('doc_id', 'unknown_doc')
-                chunk['chunk_id'] = f"{doc_id}_art_{article_num}"
+                
+                if is_internal:
+                    chunk['chunk_id'] = f"{doc_id}_sec_{chunk.get('chunk_index', 0)}"
+                else:
+                    # Extract the legal article number ("45", "12", or "0" if not detected)
+                    article_num: str = self.article_parser.extract_article_id(normalized_content)
+                    chunk['chunk_id'] = f"{doc_id}_art_{article_num}"
                 
                 # Regenerate Hash based on the pristine Normalized text
                 chunk['chunk_hash'] = self._generate_hash(normalized_content)

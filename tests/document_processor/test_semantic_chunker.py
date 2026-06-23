@@ -7,6 +7,8 @@ Run with:
 
 import pytest
 
+from typing import List
+
 from src.document_processor.chunkers.semantic_chunker import (
     Chunk,
     ChunkMetadata,
@@ -20,8 +22,24 @@ from src.document_processor.chunkers.semantic_chunker import (
 DOC_ID = 1
 
 
-def make_chunker() -> SemanticChunker:
-    return SemanticChunker()
+class TestSemanticChunkerWrapper:
+    def __init__(self, chunker):
+        self.chunker = chunker
+
+    def create_chunks(self, full_text: str, doc_id: str) -> List[Chunk]:
+        raw_chunks = self.chunker.create_chunks(full_text, doc_id)
+        return [
+            Chunk(
+                doc_id=c["doc_id"],
+                chunk_index=c["chunk_index"],
+                content=c["content"],
+                metadata=ChunkMetadata(**c["metadata"])
+            )
+            for c in raw_chunks
+        ]
+
+def make_chunker() -> TestSemanticChunkerWrapper:
+    return TestSemanticChunkerWrapper(SemanticChunker())
 
 
 # ---------------------------------------------------------------------------
