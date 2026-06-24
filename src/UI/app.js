@@ -64,6 +64,7 @@ let selectedFiles = [];
 // ===================================================================
 const VIEW_META = {
     data: { title: 'Data Ingestion', subtitle: 'Scrape URLs or upload compliance documents for processing' },
+    approvals: { title: 'Regulatory Approvals', subtitle: 'Review and approve modifications to active law segments' },
 };
 
 function switchView(viewName) {
@@ -82,7 +83,10 @@ function switchView(viewName) {
     pageTitle.textContent = meta.title || viewName;
     pageSubtitle.textContent = meta.subtitle || '';
 
-
+    // Trigger view-specific init
+    if (viewName === 'approvals') {
+        loadPendingApprovals();
+    }
 }
 
 navItems.forEach(item => {
@@ -356,6 +360,164 @@ async function checkHealth() {
 // Check health on load and every 30s
 checkHealth();
 setInterval(checkHealth, 30000);
+
+// ===================================================================
+// Approvals Tab (Diff Review & Approval)
+// ===================================================================
+
+const approvalsList = $('#approvals-list');
+const approvalsEmpty = $('#approvals-empty');
+const pendingCountEl = $('#pending-count');
+
+async function loadPendingApprovals() {
+    try {
+        approvalsList.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--text-secondary);"><div class="loading-spinner" style="margin: 0 auto 16px;"></div>Loading pending approvals...</div>';
+        approvalsEmpty.style.display = 'none';
+
+        const response = await fetch(`${API_BASE}/api/approvals`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const chunks = await response.json();
+
+        renderApprovals(chunks);
+    } catch (err) {
+        showToast('error', 'Failed to load approvals', err.message);
+        approvalsList.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--error);">Error loading approvals: ${err.message}</div>`;
+    }
+}
+
+function renderApprovals(chunks) {
+    approvalsList.innerHTML = '';
+    pendingCountEl.textContent = chunks.length;
+
+    if (chunks.length === 0) {
+        approvalsEmpty.style.display = 'flex';
+        return;
+    }
+
+    approvalsEmpty.style.display = 'none';
+
+    chunks.forEach(chunk => {
+        const card = document.createElement('div');
+        card.className = 'approval-card';
+        card.id = `approval-card-${chunk.id}`;
+
+        const isModified = chunk.change_type === 'modified';
+        const badgeClass = isModified ? 'badge-modified' : 'badge-added';
+        const badgeText = isModified ? 'Modified' : 'Added';
+
+        // Meta text
+        const pageText = chunk.page_number ? `Page ${chunk.page_number}` : 'Unknown Page';
+        const metaText = `Segment Index: ${chunk.chunk_index} | ${pageText} | Version ${chunk.version}`;
+
+        // Construct HTML for comparison
+        let diffHtml = '';
+        if (isModified) {
+            diffHtml = `
+                <div class="diff-container side-by-side">
+                    <div class="diff-box diff-deleted">
+                        <div class="diff-box-header">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            <span>Previous Version</span>
+                        </div>
+                        <div class="diff-box-content">${escapeHTML(chunk.old_content || '')}</div>
+                    </div>
+                    <div class="diff-box diff-inserted">
+                        <div class="diff-box-header">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20,6 9,17 4,12"/></svg>
+                            <span>Proposed Version</span>
+                        </div>
+                        <div class="diff-box-content">${escapeHTML(chunk.content)}</div>
+                    </div>
+                </div>
+            `;
+        } else {
+            diffHtml = `
+                <div class="diff-container">
+                    <div class="diff-box diff-inserted">
+                        <div class="diff-box-header">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20,6 9,17 4,12"/></svg>
+                            <span>Proposed New Provision</span>
+                        </div>
+                        <div class="diff-box-content">${escapeHTML(chunk.content)}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        card.innerHTML = `
+            <div class="approval-card-header">
+                <div class="approval-card-title-group">
+                    <div class="approval-doc-title">${escapeHTML(chunk.title || 'Untitled Document')}</div>
+                    <div class="approval-doc-meta">${metaText}</div>
+                </div>
+                <div class="approval-badge-group">
+                    <span class="badge ${badgeClass}">${badgeText}</span>
+                </div>
+            </div>
+            <div class="approval-card-body">
+                ${diffHtml}
+            </div>
+            <div class="approval-card-actions">
+                <button type="button" class="btn btn-primary btn-approve" data-id="${chunk.id}">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                        <polyline points="22,4 12,14.01 9,11.01"/>
+                    </svg>
+                    <span>Approve Change</span>
+                </button>
+            </div>
+        `;
+
+        // Wire up approve click
+        card.querySelector('.btn-approve').addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            await submitApproval(chunk.id, card);
+        });
+
+        approvalsList.appendChild(card);
+    });
+}
+
+async function submitApproval(chunkId, cardElement) {
+    try {
+        const response = await fetch(`${API_BASE}/api/approvals/${chunkId}/approve`, {
+            method: 'POST'
+        });
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.detail || `HTTP ${response.status}`);
+        }
+
+        // Animate out
+        cardElement.classList.add('removing');
+        showToast('success', 'Approved Successfully', 'Regulatory chunk has been marked as active and approved.');
+        
+        setTimeout(() => {
+            cardElement.remove();
+            
+            // Recalculate count
+            const remainingCount = approvalsList.querySelectorAll('.approval-card').length;
+            pendingCountEl.textContent = remainingCount;
+            if (remainingCount === 0) {
+                approvalsEmpty.style.display = 'flex';
+            }
+        }, 400); // match CSS transition-slow duration
+
+    } catch (err) {
+        showToast('error', 'Approval Failed', err.message);
+        cardElement.querySelector('.btn-approve').disabled = false;
+    }
+}
+
+function escapeHTML(str) {
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
 
 // ===================================================================
 // Initialization

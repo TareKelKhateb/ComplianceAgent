@@ -914,6 +914,248 @@ h1, h2, h3, h4, h5, h6 {
     background: rgba(0, 0, 0, 0.05);
 }
 
+
+/* ================================================================
+   APPROVALS VIEW
+   ================================================================ */
+.approvals-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.approvals-header-bar {
+    background: var(--bg-card);
+    border-radius: var(--radius-md);
+    padding: 16px 24px;
+    border-left: 4px solid var(--gold);
+    box-shadow: var(--shadow-sm);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.approvals-count-text {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+}
+
+.approvals-count-text strong {
+    color: var(--gold);
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.approvals-list {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+/* Diff Card */
+.approval-card {
+    background: var(--bg-card);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+    border: 1px solid var(--border-light);
+    transition: transform var(--transition-medium), box-shadow var(--transition-medium), opacity var(--transition-slow);
+    display: flex;
+    flex-direction: column;
+}
+
+.approval-card.removing {
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+}
+
+.approval-card:hover {
+    box-shadow: var(--shadow-md);
+}
+
+.approval-card-header {
+    background: var(--off-white);
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border-light);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.approval-card-title-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.approval-doc-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--deep-navy);
+}
+
+.approval-doc-meta {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    display: flex;
+    gap: 16px;
+}
+
+.approval-badge-group {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.badge {
+    padding: 4px 10px;
+    border-radius: 50px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.badge-modified {
+    background: var(--gold-glow);
+    color: var(--gold);
+    border: 1px solid rgba(184, 146, 42, 0.3);
+}
+
+.badge-added {
+    background: rgba(46, 204, 113, 0.1);
+    color: var(--success);
+    border: 1px solid rgba(46, 204, 113, 0.2);
+}
+
+/* Diff View Layout */
+.approval-card-body {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.diff-container {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+}
+
+@media (min-width: 768px) {
+    .diff-container.side-by-side {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+.diff-box {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-light);
+    overflow: hidden;
+}
+
+.diff-box-header {
+    background: var(--off-white);
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-light);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.diff-box-content {
+    padding: 16px;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    font-family: inherit;
+    min-height: 120px;
+}
+
+.diff-deleted {
+    border-color: rgba(231, 76, 60, 0.2);
+}
+
+.diff-deleted .diff-box-header {
+    background: rgba(231, 76, 60, 0.05);
+    color: var(--error);
+    border-bottom-color: rgba(231, 76, 60, 0.1);
+}
+
+.diff-deleted .diff-box-content {
+    background: rgba(231, 76, 60, 0.02);
+    color: var(--text-secondary);
+    text-decoration: line-through;
+    text-decoration-color: rgba(231, 76, 60, 0.4);
+}
+
+.diff-inserted {
+    border-color: rgba(46, 204, 113, 0.2);
+}
+
+.diff-inserted .diff-box-header {
+    background: rgba(46, 204, 113, 0.05);
+    color: var(--success);
+    border-bottom-color: rgba(46, 204, 113, 0.1);
+}
+
+.diff-inserted .diff-box-content {
+    background: rgba(46, 204, 113, 0.02);
+    color: var(--deep-navy);
+}
+
+.approval-card-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 16px 24px;
+    background: var(--off-white);
+    border-top: 1px solid var(--border-light);
+}
+
+/* Empty State */
+.approvals-empty {
+    background: var(--bg-card);
+    border-radius: var(--radius-lg);
+    padding: 60px 40px;
+    text-align: center;
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--border-light);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+}
+
+.approvals-empty svg {
+    color: var(--gold);
+    background: var(--gold-glow);
+    padding: 16px;
+    border-radius: 50%;
+}
+
+.empty-title {
+    font-size: 1.4rem;
+    color: var(--deep-navy);
+}
+
+.empty-desc {
+    color: var(--text-secondary);
+    max-width: 480px;
+    margin: 0 auto;
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+
 /* ================================================================
    RESPONSIVE — Tablet
    ================================================================ */

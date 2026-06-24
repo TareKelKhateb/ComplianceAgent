@@ -385,3 +385,50 @@ async def health_check():
         status["scraper_api"] = "unreachable"
 
     return status
+
+
+# ===================================================================
+# 6. GET /api/approvals — Fetch pending chunk approvals (version > 1)
+# ===================================================================
+
+@app.get(
+    "/api/approvals",
+    summary="Get all modified chunks that require user approval (version > 1)",
+)
+async def get_approvals():
+    """
+    Fetch all modified or added law chunks that have not yet been approved
+    by the user, and are not single-version chunks (version > 1).
+    """
+    try:
+        from src.metadata_manager.db import get_unapproved_chunks
+        db_path = os.path.join(ROOT_DIR, "data", "legal_vault.db")
+        chunks = get_unapproved_chunks(db_path)
+        return chunks
+    except Exception as exc:
+        logger.exception("Failed to fetch pending approvals: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch approvals: {exc}")
+
+
+# ===================================================================
+# 7. POST /api/approvals/{chunk_id}/approve — Approve a chunk change
+# ===================================================================
+
+@app.post(
+    "/api/approvals/{chunk_id}/approve",
+    summary="Approve a document chunk modification",
+)
+async def approve_chunk(chunk_id: int):
+    """
+    Mark a specific document chunk as approved.
+    """
+    try:
+        from src.metadata_manager.db import approve_chunk_by_id
+        db_path = os.path.join(ROOT_DIR, "data", "legal_vault.db")
+        success = approve_chunk_by_id(db_path, chunk_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Database update failed.")
+        return {"success": True, "message": f"Chunk {chunk_id} successfully approved."}
+    except Exception as exc:
+        logger.exception("Failed to approve chunk %d: %s", chunk_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to approve chunk: {exc}")

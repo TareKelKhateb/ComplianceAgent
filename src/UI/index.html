@@ -39,6 +39,13 @@
                 </svg>
                 <span>Data</span>
             </button>
+            <button class="nav-item" data-view="approvals" id="nav-approvals">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                    <polyline points="22,4 12,14.01 9,11.01"/>
+                </svg>
+                <span>Approvals</span>
+            </button>
         </nav>
 
         <div class="sidebar-footer">
@@ -190,6 +197,30 @@
                         <p class="loading-text">Uploading files…</p>
                         <p class="loading-hint">Creating review session</p>
                     </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ====================================================== -->
+        <!-- APPROVALS VIEW                                         -->
+        <!-- ====================================================== -->
+        <section class="view" id="view-approvals">
+            <div class="approvals-container">
+                <div class="approvals-header-bar">
+                    <p class="approvals-count-text">Pending changes to review: <strong id="pending-count">0</strong></p>
+                </div>
+                
+                <!-- Pending Approvals list -->
+                <div class="approvals-list" id="approvals-list"></div>
+                
+                <!-- Empty state placeholder -->
+                <div class="approvals-empty" id="approvals-empty">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                        <polyline points="22,4 12,14.01 9,11.01"/>
+                    </svg>
+                    <h3 class="empty-title">All Chunks Approved</h3>
+                    <p class="empty-desc">There are no pending regulatory chunk modifications. All laws are verified and active.</p>
                 </div>
             </div>
         </section>

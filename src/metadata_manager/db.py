@@ -251,6 +251,12 @@ def init_db(db_path: str) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_internal_docs_ocr ON internal_documents (ocr_status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_corp_chunks_doc_id ON corporate_chunks (doc_id)")
 
+        # Schema evolution for approved column (MVP review flow)
+        try:
+            conn.execute("ALTER TABLE document_chunks ADD COLUMN approved INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
         conn.commit()
 
 
@@ -720,5 +726,37 @@ def get_documents_by_custom_filter(
         rows = conn.execute(query, params).fetchall()
     
     return [_row_to_document(row) for row in rows]
+
+
+def get_unapproved_chunks(db_path: str) -> list[dict]:
+    """
+    Fetch all document chunks that have been modified or added, 
+    but not yet approved by the user, and have version > 1.
+    """
+    query = """
+        SELECT c.id, c.doc_id, c.chunk_id, c.chunk_index, c.content, c.page_number, c.version, c.change_type, c.old_content, d.title
+        FROM document_chunks c
+        LEFT JOIN documents d ON c.doc_id = d.id AND c.version = d.version
+        WHERE c.approved = 0 AND c.version > 1
+        ORDER BY d.title ASC, c.chunk_index ASC
+    """
+    with _get_connection(db_path) as conn:
+        rows = conn.execute(query).fetchall()
+    return [dict(row) for row in rows]
+
+
+def approve_chunk_by_id(db_path: str, chunk_id: int) -> bool:
+    """
+    Mark a document chunk as approved.
+    """
+    query = "UPDATE document_chunks SET approved = 1 WHERE id = ?"
+    try:
+        with _get_connection(db_path) as conn:
+            conn.execute(query, (chunk_id,))
+            conn.commit()
+        return True
+    except sqlite3.Error as e:
+        print(f"[!] Error approving chunk: {e}")
+        return False
 
 
