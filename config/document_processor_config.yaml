@@ -1,0 +1,32 @@
+processing_pipeline:
+  # --- Extractor Strategy ---
+  # Options: "mistral" (high-quality, API-based), "easyocr" (local, GPU-based)
+  extractor_type: "mistral"
+
+  # --- Chunker Strategy ---
+  # Options: "semantic" (split by article headers, best for Diff Engine)
+  #          "overlapping" (fixed-size windows, best for general RAG)
+  chunker_type: "semantic"
+
+  # --- Mistral Extractor Settings ---
+  mistral:
+    model: "mistral-ocr-latest"
+    table_format: "markdown"
+
+  # --- EasyOCR Extractor Settings ---
+  easyocr:
+    languages: ["ar", "en"]
+    gpu: true
+    poppler_path: null  # Linux: Poppler is in system PATH. Windows: set full path e.g. "C:\\poppler\\bin"
+    dpi: 300
+
+  # --- Overlapping Chunker Settings ---
+  overlapping_chunker:
+    chunk_size: 600
+    overlap: 100
+    min_chunk_length: 50
+
+  # --- Full-text persistence ---
+  # If true, saves the full extracted Markdown to a .md file before chunking
+  save_full_text: true
+  full_text_output_dir: "output_markdown"

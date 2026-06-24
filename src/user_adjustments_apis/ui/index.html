@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compliance Agent — Document Review</title>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Main Stylesheet -->
+    <link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body class="dark-mode">
+    <div class="app-container">
+        <!-- Header Bar -->
+        <header class="app-header">
+            <div class="logo-area">
+                <span class="logo-icon">🛡️</span>
+                <div class="title-group">
+                    <h1>Compliance Agent</h1>
+                    <span class="subtitle">Document Review & Metadata Adjustment</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="btn-mappings" class="btn btn-secondary btn-sm" onclick="openMappingsModal()">
+                    <span class="icon">🗂️</span> Manage Cache Mappings
+                </button>
+                <div id="session-badge-container" class="session-badge-group">
+                    <span class="session-label">Session ID:</span>
+                    <code id="session-id-text" class="session-code">Loading...</code>
+                    <span id="session-status-badge" class="badge badge-pending">PENDING</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Workspace Area -->
+        <main class="workspace">
+            <!-- Loading Skeleton -->
+            <div id="loading-overlay" class="loading-overlay">
+                <div class="spinner"></div>
+                <p>Loading session documents...</p>
+            </div>
+
+            <!-- Error State -->
+            <div id="error-container" class="error-container hidden">
+                <span class="error-icon">⚠️</span>
+                <h2>Failed to Load Session</h2>
+                <p id="error-message">The review session could not be found or the server is offline.</p>
+                <button class="btn btn-primary" onclick="window.location.reload()">Retry</button>
+            </div>
+
+            <!-- Dashboard Split View -->
+            <div id="dashboard-content" class="dashboard-content hidden">
+                <!-- Left Column: Document List -->
+                <section class="doc-list-pane">
+                    <div class="search-filter-bar">
+                        <input type="text" id="doc-search" placeholder="Search by ID or title..." oninput="filterDocuments()">
+                        <select id="doc-status-filter" onchange="filterDocuments()">
+                            <option value="all">All Documents</option>
+                            <option value="incomplete">Incomplete</option>
+                            <option value="cached">Cached Mappings</option>
+                            <option value="complete">Complete / Valid</option>
+                        </select>
+                    </div>
+                    <div class="doc-list-scroll" id="doc-list-container">
+                        <!-- Populated by JavaScript -->
+                    </div>
+                </section>
+
+                <!-- Right Column: Document Details Editor -->
+                <section class="doc-editor-pane" id="editor-pane">
+                    <div class="empty-editor-state" id="editor-empty">
+                        <span class="empty-icon">📄</span>
+                        <h3>No Document Selected</h3>
+                        <p>Select a document from the left list to review and edit its compliance metadata.</p>
+                    </div>
+
+                    <div class="editor-content hidden" id="editor-form-container">
+                        <div class="editor-header">
+                            <div class="editor-title-area">
+                                <span class="doc-idx-badge" id="editor-doc-index">Doc #1</span>
+                                <h2 id="editor-doc-title-display">Document Title</h2>
+                            </div>
+                            <div class="editor-status-badges">
+                                <span id="editor-cached-badge" class="badge badge-success hidden">CACHED MAPPING</span>
+                                <span id="editor-valid-badge" class="badge badge-complete">COMPLETE</span>
+                            </div>
+                        </div>
+
+                        <form id="metadata-form" class="metadata-form" onsubmit="return false;">
+                            <!-- ID field at the very top (user-assigned, most important) -->
+                            <div class="form-group form-group-important">
+                                <div class="label-row">
+                                    <label for="field-id">Document ID <span class="required">*</span></label>
+                                    <span class="field-hint">e.g. 01_banking_laws (must be unique)</span>
+                                </div>
+                                <input type="text" id="field-id" class="input-field" placeholder="Assign unique ID..." oninput="handleFieldInput('id', this.value)">
+                            </div>
+
+                            <div class="form-grid">
+                                <div class="form-group col-span-2">
+                                    <label for="field-title">Document Title</label>
+                                    <input type="text" id="field-title" class="input-field" placeholder="Document title..." oninput="handleFieldInput('title', this.value)">
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="field-document-type">Document Type</label>
+                                    <select id="field-document-type" class="input-field" onchange="handleFieldInput('document_type', this.value)">
+                                        <option value="LAW">LAW</option>
+                                        <option value="EXECUTIVE_REGULATION">EXECUTIVE_REGULATION</option>
+                                        <option value="PRESIDENTIAL_DECREE">PRESIDENTIAL_DECREE</option>
+                                        <option value="INTERNAL_POLICY">INTERNAL_POLICY</option>
+                                        <option value="MINISTERIAL_DECREE">MINISTERIAL_DECREE</option>
+                                        <option value="REGULATION">REGULATION</option>
+                                        <option value="OTHER">OTHER</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="field-issuing-entity">Issuing Entity</label>
+                                    <input type="text" id="field-issuing-entity" class="input-field" placeholder="e.g. Central Bank of Egypt" oninput="handleFieldInput('issuing_entity', this.value)">
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="field-document-number">Document Number</label>
+                                    <input type="text" id="field-document-number" class="input-field" placeholder="e.g. Law 194 of 2020" oninput="handleFieldInput('document_number', this.value)">
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="field-year">Year</label>
+                                    <input type="text" id="field-year" class="input-field" placeholder="e.g. 2020" oninput="handleFieldInput('year', this.value)">
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="field-language">Language</label>
+                                    <select id="field-language" class="input-field" onchange="handleFieldInput('language', this.value)">
+                                        <option value="English">English</option>
+                                        <option value="Arabic">Arabic</option>
+                                    </select>
+                                </div>
+
+                                <!-- Internal Document Toggle -->
+                                <div class="form-group col-span-2 form-group-important">
+                                    <div class="label-row">
+                                        <label for="field-internal-toggle">Internal Document</label>
+                                        <span class="field-hint">Check to classify as an internal company policy</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="field-internal-toggle" 
+                                               onchange="handleInternalToggle(this.checked)">
+                                        <span class="toggle-slider"></span>
+                                        <span class="toggle-label" id="internal-toggle-label">External (General Law)</span>
+                                    </label>
+                                </div>
+
+                                <div class="form-group col-span-2 form-group-important">
+                                    <div class="label-row">
+                                        <label for="field-category">Category <span class="required">*</span></label>
+                                        <span class="field-hint">e.g. Banking, AML, Tax</span>
+                                    </div>
+                                    <input type="text" id="field-category" class="input-field" placeholder="Enter category..." oninput="handleFieldInput('category', this.value)">
+                                </div>
+
+                                <div class="form-group col-span-2 form-group-important">
+                                    <div class="label-row">
+                                        <label for="field-subcategory">Subcategory <span class="required">*</span></label>
+                                        <span class="field-hint">e.g. Regulation, Compliance</span>
+                                    </div>
+                                    <input type="text" id="field-subcategory" class="input-field" placeholder="Enter subcategory..." oninput="handleFieldInput('subcategory', this.value)">
+                                </div>
+                            </div>
+
+                            <div class="editor-footer-links">
+                                <a id="editor-pdf-link" href="#" target="_blank" class="pdf-link">
+                                    <span class="pdf-icon">📄</span> Open Original PDF in New Tab
+                                </a>
+                                <span id="auto-save-status" class="auto-save-status">
+                                    <span class="status-indicator"></span> Auto-saved
+                                </span>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+            </div>
+        </main>
+
+        <!-- Bottom Sticky Action Bar -->
+        <footer id="action-bar" class="action-bar hidden">
+            <div class="bar-progress">
+                <div class="progress-label">
+                    Review Progress: <span id="progress-text">0 / 0 Documents Completed</span>
+                </div>
+                <div class="progress-track">
+                    <div id="progress-bar" class="progress-fill" style="width: 0%"></div>
+                </div>
+            </div>
+            
+            <div class="bar-actions">
+                <div id="validation-warning" class="validation-warning">
+                    <span class="warn-icon">⚠️</span> <span id="warning-text">Documents need attention</span>
+                </div>
+                <button id="btn-reject" class="btn btn-danger-outline" onclick="confirmReject()">
+                    Reject Session
+                </button>
+                <button id="btn-approve" class="btn btn-success" onclick="approveSession()">
+                    Approve & Continue Pipeline ➔
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Mappings Cache Manager Modal -->
+    <div id="mappings-modal" class="modal-backdrop">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h2>Global Mapping Cache Mappings</h2>
+                <button class="modal-close" onclick="closeMappingsModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-description">
+                    These are the metadata mappings persisted in SQLite. If a document with the same URL is scraped in future sessions, these fields will be auto-populated.
+                </p>
+                <div class="table-container">
+                    <table class="mappings-table">
+                        <thead>
+                            <tr>
+                                <th>Document ID</th>
+                                <th>URL</th>
+                                <th>Category / Subcategory</th>
+                                <th>Type</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mappings-table-body">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                    <div id="mappings-empty" class="mappings-empty hidden">
+                        No cached mappings found. Approved sessions will create mappings here.
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="justify-content: space-between; width: 100%;">
+                <button class="btn btn-danger-outline" onclick="clearAllCache()">Clear All Cache</button>
+                <button class="btn btn-secondary" onclick="closeMappingsModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Main JavaScript Application Logic -->
+    <script defer src="/ui/app.js"></script>
+</body>
+</html>

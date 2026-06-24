@@ -32,11 +32,17 @@ QUICKSTART:
 
 import csv
 import json
+import logging
 import os
 import sqlite3
-from typing import Optional
 import subprocess
 import shutil
+from contextlib import contextmanager
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+# Module-level logger — inherits the application's root logging configuration.
+logger = logging.getLogger(__name__)
 
 from .db import (
     init_db,
@@ -46,8 +52,11 @@ from .db import (
     get_document_by_id,            # Use this instead of db_get_by_id
     get_latest_by_url,             # Use this instead of db_get_latest_by_url
     get_all_versions_by_url,       # (Correct)
+    get_all_versions_by_id,
+    get_latest_by_id,
     get_all_latest_documents,      # Use this instead of db_get_all_latest
     search_by_metadata,            # Use this instead of db_search
+    get_documents_by_custom_filter,
     get_documents_by_download_status, # Use this for status-based queries
     mark_download_failed,
     insert_documents_batch,
@@ -61,6 +70,8 @@ from .models import StorageResult, StoredDocument, BatchStorageResult
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CONFIG_FILE_PATH = os.path.join(ROOT_DIR, "config.yaml")
 DEFAULT_DB_PATH = os.path.join(ROOT_DIR, "data", "legal_vault.db")
+
+
 
 
 def _parse_simple_yaml(yaml_text: str) -> dict[str, str]:
@@ -125,6 +136,16 @@ class MetadataStore:
         self.vault_path = _get_vault_path_from_config()
         init_db(self.db_path)
 
+    @contextmanager
+    def _get_connection(self, db_path=None): 
+        """Internal helper to manage SQLite connections."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row 
+        conn.execute("PRAGMA foreign_keys = ON;")
+        try:
+            yield conn
+        finally:
+            conn.close()
     # =======================================================================
     # INSERT
     # =======================================================================
@@ -150,9 +171,15 @@ class MetadataStore:
         Returns:
             StorageResult where .data is the StoredDocument
         """
+        id          = data.get("id", "").strip()
         file_url    = data.get("file_url", "").strip()
         sha256_hash = data.get("sha256_hash", "").strip()
 
+        if not id:
+            return StorageResult(
+                success=False,
+                message="Insert failed: 'id' is required but missing. (e.g., '01_banking_laws')",
+            )
         if not file_url:
             return StorageResult(
                 success=False,
@@ -165,11 +192,12 @@ class MetadataStore:
                         "Your teammate should compute this before calling insert_document().",
             )
 
-        check = check_hash(self.db_path, file_url, sha256_hash)
+        is_internal = data.get("category", "").strip().lower() == "internal"
+        check = check_hash(self.db_path, id, sha256_hash, is_internal=is_internal)
 
         if check["action"] == "skip":
             # return the existing record so the caller still gets a StoredDocument
-            existing = get_latest_by_url(self.db_path, file_url)
+            existing = get_document_by_id(self.db_path, id, is_internal=is_internal)
             return StorageResult(
                 success=True,
                 message=f"Skipped (no insert needed): {check['reason']}",
@@ -177,7 +205,7 @@ class MetadataStore:
             )
 
         try:
-            doc = insert_document(self.db_path, data, version=check["new_version"])
+            doc = insert_document(self.db_path, data, version=check["new_version"], is_internal=is_internal)
             return StorageResult(
                 success=True,
                 message=f"Inserted successfully — {check['reason']}",
@@ -269,7 +297,7 @@ class MetadataStore:
     # UPDATE
     # =======================================================================
 
-    def update_document_by_id(self, document_id: int, fields: dict) -> StorageResult:
+    def update_document_by_id(self, document_id: str, fields: dict) -> StorageResult:
         """
         Update any metadata fields of a document by its ID.
         Only the keys you provide are updated — everything else stays the same.
@@ -364,7 +392,7 @@ class MetadataStore:
     # DELETE
     # =======================================================================
 
-    def delete_document_by_id(self, document_id: int) -> StorageResult:
+    def delete_document_by_id(self, document_id: str) -> StorageResult:
         """Permanently removes a document record from the database by its ID."""
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -437,7 +465,7 @@ class MetadataStore:
             data=count,
         )
 
-    def delete_documents_batch_by_ids(self, document_ids: list[int]) -> StorageResult:
+    def delete_documents_batch_by_ids(self, document_ids: list[str]) -> StorageResult:
         """
         Delete multiple documents by a list of IDs.
 
@@ -474,11 +502,12 @@ class MetadataStore:
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM document_chunks")
                 conn.execute("DELETE FROM documents")
-                # Reset the AUTOINCREMENT counter so IDs restart from 1
-                conn.execute(
-                    "DELETE FROM sqlite_sequence WHERE name = 'documents'"
-                )
+                conn.execute("DELETE FROM corporate_chunks")
+                conn.execute("DELETE FROM internal_documents")
+                # Reset the AUTOINCREMENT counter
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('documents', 'document_chunks', 'internal_documents', 'corporate_chunks')")
                 conn.commit()
             return StorageResult(
                 success=True,
@@ -491,33 +520,135 @@ class MetadataStore:
     # READ / QUERY
     # =======================================================================
 
-    def get_document_by_id(self, document_id: int) -> StorageResult:
+    def get_document_by_id(self, doc_id: str, is_internal: bool = False) -> StorageResult:
         """
-        Get one document by its database ID.
+        Retrieve a single document record from the database by its unique custom ID.
+
+        This method executes a parameterised SELECT query and maps every column of
+        the ``documents`` table — identity fields, scraped metadata, storage fields,
+        and OCR status fields — into a fully populated ``StoredDocument`` instance.
+
+        Args:
+            doc_id (str): The unique custom ID of the document to retrieve
+                          (e.g. ``"01_banking_laws"``).  This matches the ``id``
+                          primary key column in the ``documents`` table.
+            is_internal (bool): If True, queries the internal_documents table instead.
 
         Returns:
-            StorageResult where .data is StoredDocument or None
+            StorageResult:
+                - **Found**:     ``success=True``, ``message`` confirms the ID and
+                  version, ``data`` is a fully populated ``StoredDocument``.
+                - **Not found**: ``success=False``, ``message`` states the ID was
+                  not found, ``data`` is ``None``.
+                - **DB error**:  ``success=False``, ``message`` contains the error
+                  description, ``data`` is ``None``.  The exception is also logged
+                  at ERROR level so it appears in the application log.
+
+        Example::
+
+            result = store.get_document_by_id("01_banking_laws")
+            if result.success:
+                doc: StoredDocument = result.data
+                print(doc.title, doc.ocr_status)
+            else:
+                print(result.message)
         """
-        doc = get_document_by_id(self.db_path, document_id)
-        if not doc:
+        table = self._docs_table(is_internal)
+        query = f"SELECT * FROM {table} WHERE id = ? LIMIT 1"
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute(query, (doc_id,))
+                row = cursor.fetchone()
+
+            # ----------------------------------------------------------------
+            # Case 1 — document not found
+            # ----------------------------------------------------------------
+            if row is None:
+                return StorageResult(
+                    success=False,
+                    message=(
+                        f"Document not found: no record exists with id='{doc_id}' in table '{table}'. "
+                        "Please verify the ID and try again."
+                    ),
+                    data=None,
+                )
+
+            # ----------------------------------------------------------------
+            # Case 2 — document found: map ALL columns to the dataclass
+            # ----------------------------------------------------------------
+            # Using explicit field mapping (instead of **dict(row)) ensures that:
+            #   a) type coercions are applied correctly (e.g. bool for is_last)
+            #   b) OCR status fields are always included, even on older DB schemas
+            #      where _row_to_document() in db.py may not yet cover them.
+            document = StoredDocument(
+                # -- Identity --------------------------------------------------
+                id=row["id"],
+                file_url=row["file_url"],
+
+                # -- Scraped metadata ------------------------------------------
+                title=row["title"],
+                document_type=row["document_type"],
+                issuing_entity=row["issuing_entity"],
+                document_number=row["document_number"],
+                year=row["year"],
+                date=row["date"],
+                language=row["language"],
+                category=row["category"],
+                subcategory=row["subcategory"],
+
+                # -- Storage fields --------------------------------------------
+                sha256_hash=row["sha256_hash"],
+                version=row["version"],
+                is_last=bool(row["is_last"]),
+                file_path=row["file_path"],
+                file_size_bytes=row["file_size_bytes"],
+                download_status=row["download_status"],
+                created_at=row["created_at"],
+
+                # -- OCR status fields -----------------------------------------
+                ocr_status=row["ocr_status"],
+                ocr_processed_at=row["ocr_processed_at"],
+                retry_count=row["retry_count"],
+            )
+
+            return StorageResult(
+                success=True,
+                message=(
+                    f"Document retrieved successfully from '{table}': id='{doc_id}' "
+                    f"(version={document.version}, "
+                    f"ocr_status='{document.ocr_status}')."
+                ),
+                data=document,
+            )
+
+        # --------------------------------------------------------------------
+        # Case 3 — database-level error (connection issue, corrupted schema…)
+        # --------------------------------------------------------------------
+        except sqlite3.Error as exc:
+            logger.error(
+                "[MetadataStore.get_document_by_id] Database error while retrieving "
+                "doc_id='%s': %s",
+                doc_id,
+                exc,
+                exc_info=True,
+            )
             return StorageResult(
                 success=False,
-                message=f"No document found with id={document_id}.",
+                message=(
+                    f"Database error while retrieving document id='{doc_id}': {exc}"
+                ),
+                data=None,
             )
-        return StorageResult(
-            success=True,
-            message=f"Found document id={document_id} (version {doc.version}).",
-            data=doc,
-        )
 
-    def get_latest_document_by_url(self, file_url: str) -> StorageResult:
+    def get_latest_document_by_url(self, file_url: str, is_internal: bool = False) -> StorageResult:
         """
         Get the latest version of a document by URL.
 
         Returns:
             StorageResult where .data is StoredDocument
         """
-        doc = get_latest_by_url(self.db_path, file_url)
+        doc = get_latest_by_url(self.db_path, file_url, is_internal=is_internal)
         if not doc:
             return StorageResult(
                 success=False,
@@ -529,14 +660,14 @@ class MetadataStore:
             data=doc,
         )
 
-    def get_all_versions_by_url(self, file_url: str) -> StorageResult:
+    def get_all_versions_by_url(self, file_url: str, is_internal: bool = False) -> StorageResult:
         """
         Get all versions of a document by URL, ordered v1 → vN.
 
         Returns:
             StorageResult where .data is list of StoredDocument
         """
-        docs = get_all_versions_by_url(self.db_path, file_url)
+        docs = get_all_versions_by_url(self.db_path, file_url, is_internal=is_internal)
         if not docs:
             return StorageResult(
                 success=False,
@@ -548,7 +679,45 @@ class MetadataStore:
             data=docs,
         )
 
-    def get_all_latest_documents(self) -> StorageResult:
+    def get_latest_document_by_id(self, document_id: str, is_internal: bool = False) -> StorageResult:
+        """
+        Get the latest version of a document by ID.
+
+        Returns:
+            StorageResult where .data is StoredDocument
+        """
+        doc = get_latest_by_id(self.db_path, document_id, is_internal=is_internal)
+        if not doc:
+            return StorageResult(
+                success=False,
+                message=f"No document found for ID '{document_id}'.",
+            )
+        return StorageResult(
+            success=True,
+            message=f"Latest version of '{document_id}' is version {doc.version}.",
+            data=doc,
+        )
+
+    def get_all_versions_by_id(self, document_id: str, is_internal: bool = False) -> StorageResult:
+        """
+        Get all versions of a document by ID, ordered oldest → newest.
+
+        Returns:
+            StorageResult where .data is list of StoredDocument
+        """
+        docs = get_all_versions_by_id(self.db_path, document_id, is_internal=is_internal)
+        if not docs:
+            return StorageResult(
+                success=False,
+                message=f"No documents found for ID '{document_id}'.",
+            )
+        return StorageResult(
+            success=True,
+            message=f"Found {len(docs)} version(s) for ID '{document_id}'.",
+            data=docs,
+        )
+
+    def get_all_latest_documents(self, is_internal: Optional[bool] = None) -> StorageResult:
         """
         Get the latest version of every document in the DB.
         This is the main handoff to Tier 2 (chunking & vector DB).
@@ -556,21 +725,27 @@ class MetadataStore:
         Returns:
             StorageResult where .data is list of StoredDocument
         """
-        docs = get_all_latest_documents(self.db_path)
+        if is_internal is None:
+            docs = get_all_latest_documents(self.db_path, is_internal=False) + get_all_latest_documents(self.db_path, is_internal=True)
+        else:
+            docs = get_all_latest_documents(self.db_path, is_internal=is_internal)
         return StorageResult(
             success=True,
             message=f"Retrieved {len(docs)} document(s) (latest versions only).",
             data=docs,
         )
 
-    def get_all_documents_all_versions(self) -> StorageResult:
+    def get_all_documents_all_versions(self, is_internal: Optional[bool] = None) -> StorageResult:
         """
         Get every record in the DB — all versions of all documents.
 
         Returns:
             StorageResult where .data is list of StoredDocument
         """
-        docs = search_by_metadata(self.db_path, latest_only=False)
+        if is_internal is None:
+            docs = search_by_metadata(self.db_path, latest_only=False, is_internal=False) + search_by_metadata(self.db_path, latest_only=False, is_internal=True)
+        else:
+            docs = search_by_metadata(self.db_path, latest_only=False, is_internal=is_internal)
         return StorageResult(
             success=True,
             message=f"Retrieved {len(docs)} total record(s) (all versions included).",
@@ -587,6 +762,7 @@ class MetadataStore:
         language:        Optional[str] = None,
         download_status: Optional[str] = None,
         latest_only:     bool = True,
+        is_internal:     bool = False,
     ) -> StorageResult:
         """
         Search documents by any combination of metadata fields.
@@ -612,6 +788,7 @@ class MetadataStore:
             language=language,
             download_status=download_status,
             latest_only=latest_only,
+            is_internal=is_internal,
         )
         active_filters = {k: v for k, v in {
             "title": title, "document_type": document_type,
@@ -625,33 +802,75 @@ class MetadataStore:
             data=docs,
         )
 
-    def check_document_exists(self, file_url: str = None, sha256_hash: str = None) -> StorageResult:
+    def get_documents_by_filter(
+        self,
+        category: str,
+        subcategory: Optional[str] = None,
+        title: Optional[str] = None,
+        is_last: Optional[bool] = None,
+    ) -> list[StoredDocument]:
         """
-        Check if a document already exists by URL or hash (or both).
+        High-level interface to retrieve documents by classification metadata.
+        
+        Args:
+            category: The document category (e.g., 'banking', 'compliance'). REQUIRED.
+            subcategory: Optional specific subcategory.
+            title: Optional partial title match.
+            is_last: Optional filter for latest version only (True) or historical (False).
+            
+        Returns:
+            A list of StoredDocument objects matching the criteria.
+            
+        Raises:
+            ValueError: If no documents are found matching the criteria.
+        """
+        docs = get_documents_by_custom_filter(
+            db_path=self.db_path,
+            category=category,
+            subcategory=subcategory,
+            title=title,
+            is_last=is_last
+        )
+
+        if not docs:
+            error_msg = f"No documents found matching the criteria. Category: '{category}'"
+            if subcategory:
+                error_msg += f", Subcategory: '{subcategory}'"
+            if title:
+                error_msg += f", Title: '{title}'"
+            if is_last is not None:
+                error_msg += f", is_last: {is_last}"
+            
+            raise ValueError(error_msg)
+
+        return docs
+
+    def check_document_exists(self, document_id: str = None, file_url: str = None, sha256_hash: str = None, is_internal: bool = False) -> StorageResult:
+        """
+        Check if a document already exists by ID, URL, or hash.
 
         Returns:
             StorageResult where .data is True/False
         """
-        if not file_url and not sha256_hash:
+        if not document_id and not file_url and not sha256_hash:
             return StorageResult(
                 success=False,
-                message="Provide at least one of: file_url, sha256_hash.",
+                message="Provide at least one of: document_id, file_url, sha256_hash.",
             )
 
-        docs = search_by_metadata(
-            self.db_path,
-            latest_only=False,
-        )
-        found = [
-            d for d in docs
-            if (file_url and d.file_url == file_url)
-            or (sha256_hash and d.sha256_hash == sha256_hash)
-        ]
-        exists = len(found) > 0
+        table = self._docs_table(is_internal)
+        with self._get_connection() as conn:
+            if document_id:
+                row = conn.execute(f"SELECT 1 FROM {table} WHERE id = ? LIMIT 1", (document_id,)).fetchone()
+            elif file_url:
+                row = conn.execute(f"SELECT 1 FROM {table} WHERE file_url = ? LIMIT 1", (file_url,)).fetchone()
+            else:
+                row = conn.execute(f"SELECT 1 FROM {table} WHERE sha256_hash = ? LIMIT 1", (sha256_hash,)).fetchone()
+            exists = row is not None
+
         return StorageResult(
             success=True,
-            message=f"Document {'found' if exists else 'not found'} — "
-                    f"matched {len(found)} record(s).",
+            message=f"Document {'found' if exists else 'not found'}.",
             data=exists,
         )
 
@@ -730,6 +949,7 @@ class MetadataStore:
                     "issuing_entity": d.issuing_entity,
                     "document_number": d.document_number, "year": d.year,
                     "date": d.date, "language": d.language,
+                    "category": d.category, "subcategory": d.subcategory,
                     "file_path": d.file_path,
                     "file_size_bytes": d.file_size_bytes,
                 }
@@ -777,6 +997,7 @@ class MetadataStore:
                     "issuing_entity": d.issuing_entity,
                     "document_number": d.document_number, "year": d.year,
                     "date": d.date, "language": d.language,
+                    "category": d.category, "subcategory": d.subcategory,
                     "file_path": d.file_path, "file_size_bytes": d.file_size_bytes,
                 }
                 for d in docs
@@ -859,17 +1080,25 @@ class MetadataStore:
     # Internal helpers
     # =======================================================================
 
-    def _promote_previous_version(self, file_url: str) -> None:
+    def _docs_table(self, is_internal: bool = False) -> str:
+        """Return the documents table name based on document type."""
+        return "internal_documents" if is_internal else "documents"
+
+    def _chunks_table(self, is_internal: bool = False) -> str:
+        """Return the chunks table name based on document type."""
+        return "corporate_chunks" if is_internal else "document_chunks"
+
+    def _promote_previous_version(self, file_url: str, is_internal: bool = False) -> None:
         """After deleting the latest version, promote the next newest to is_last=1."""
         # Re-query AFTER the delete so we only see remaining versions
-        remaining = get_all_versions_by_url(self.db_path, file_url)
+        remaining = get_all_versions_by_url(self.db_path, file_url, is_internal=is_internal)
         if not remaining:
             return
         # Check if any version is already marked is_last (shouldn't be, but safe)
         if any(d.is_last for d in remaining):
             return
         newest = max(remaining, key=lambda d: d.version)
-        update_document_file_info(self.db_path, newest.id, {"is_last": 1})
+        update_document_file_info(self.db_path, newest.id, {"is_last": 1}, is_internal=is_internal)
 
     def save_documents_to_db(db_path: str, docs_list: list[StoredDocument]) -> BatchStorageResult:
         """
@@ -884,24 +1113,25 @@ class MetadataStore:
         
         return result
     
-    def sync_to_dagshub(self, local_pdf_path: str, file_url: str = None) -> bool:
+    def sync_to_dagshub(self, local_pdf_path: str, document_id: str = None, file_url: str = None) -> bool:
         """
         Orchestrates the movement of a local file into the DVC vault and 
         pushes the changes to DagsHub. Updates the metadata database upon success.
         
         Args:
             local_pdf_path (str): Path to the local PDF file to sync
-            file_url (str, optional): Document URL for database lookup. If provided,
-                                     the document status will be marked as 'uploaded'
-                                     after successful sync.
+            document_id (str, optional): Document ID for database lookup. If provided,
+                                         the document status will be marked as 'uploaded'.
+            file_url (str, optional): Fallback document URL for database lookup.
         
         Returns:
             bool: True if sync and (optionally) database update succeeded, False otherwise
         
         Database Integration:
+            - If document_id is provided, searches for latest document by ID
             - If file_url is provided, searches for latest document by URL
             - Updates download_status to 'uploaded' upon successful dvc push
-            - If document not found by URL, warns but returns True (file was synced)
+            - If document not found, warns but returns True (file was synced)
         """
         if not os.path.exists(local_pdf_path):
             print(f"Error: File not found at {local_pdf_path}")
@@ -933,22 +1163,29 @@ class MetadataStore:
             print(f"Successfully synced {file_name} to DagsHub storage.")
 
             # 6. Update database metadata upon successful push
-            if file_url:
+            if document_id or file_url:
                 try:
-                    # Find the document by URL and mark as uploaded
-                    doc = get_latest_by_url(self.db_path, file_url)
+                    if document_id:
+                        doc = get_latest_by_id(self.db_path, document_id, is_internal=False) or get_latest_by_id(self.db_path, document_id, is_internal=True)
+                        identifier = f"ID '{document_id}'"
+                    else:
+                        doc = get_latest_by_url(self.db_path, file_url, is_internal=False) or get_latest_by_url(self.db_path, file_url, is_internal=True)
+                        identifier = f"URL '{file_url}'"
+
                     if doc:
+                        is_internal = (doc.category or "").strip().lower() == "internal"
                         update_result = update_document_file_info(
                             self.db_path,
                             doc.id,
-                            {"download_status": "uploaded", "file_path": final_path}
+                            {"download_status": "uploaded", "file_path": final_path},
+                            is_internal=is_internal
                         )
                         if update_result:
                             print(f"✓ Database updated: document {doc.id} marked as 'uploaded'")
                         else:
                             print(f"⚠ Warning: Document {doc.id} not updated in DB (unexpected)")
                     else:
-                        print(f"⚠ Warning: Document with URL '{file_url}' not found in DB. "
+                        print(f"⚠ Warning: Document with {identifier} not found in DB. "
                               f"File synced to DagsHub but DB not updated.")
                 except Exception as db_error:
                     print(f"⚠ Warning: Database update failed: {db_error}. "
@@ -980,3 +1217,397 @@ class MetadataStore:
         except Exception as e:
             print(f"Error: {e}")
             return None        
+                
+    def get_pending_documents(self) -> List[Dict[str, Any]]:
+            """
+            Retrieves documents waiting for OCR processing, including those that 
+            failed previously but have not exceeded the retry limit.
+            """
+            query = """
+                SELECT id, file_path, file_url, title, category FROM documents 
+                WHERE (download_status = 'downloaded' OR download_status = 'uploaded')
+                AND (
+                    ocr_status = 'pending' 
+                    OR (ocr_status = 'failed' AND retry_count < 3)
+                )
+
+                UNION ALL
+
+                SELECT id, file_path, file_url, title, category FROM internal_documents 
+                WHERE (download_status = 'downloaded' OR download_status = 'uploaded')
+                AND (
+                    ocr_status = 'pending' 
+                    OR (ocr_status = 'failed' AND retry_count < 3)
+                )
+            """
+            try:
+                with self._get_connection(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.execute(query)
+                    return [dict(row) for row in cursor.fetchall()]
+            except Exception as e:
+                print(f"[!] Error fetching pending documents: {e}")
+                return []
+            
+    def update_ocr_status(self, doc_id: int, status: str, is_internal: bool = False) -> StorageResult:
+            """
+            Updates the OCR status of a specific document and handles retry logic.
+            Valid statuses: 'pending', 'processing', 'completed', 'failed'.
+            If status is 'failed', the retry_count is automatically incremented.
+            If status is 'completed', the ocr_processed_at timestamp is set.
+            """
+            processed_at_clause = ""
+            retry_clause = ""
+            params = [status]
+            table = self._docs_table(is_internal)
+            
+            # 1. Handle timestamp for completed documents
+            if status == 'completed':
+                processed_at_clause = ", ocr_processed_at = ?"
+                params.append(datetime.now().isoformat())
+                
+            # 2. Handle retry logic: increment count only if status is 'failed'
+            if status == 'failed':
+                retry_clause = ", retry_count = retry_count + 1"
+
+            # 3. Add doc_id to params for the WHERE clause
+            params.append(doc_id)
+
+            # 4. Construct the dynamic SQL query
+            query = f"""
+                UPDATE {table} 
+                SET ocr_status = ? {processed_at_clause} {retry_clause} 
+                WHERE id = ? AND is_last = 1
+            """
+            
+            try:
+                with self._get_connection(self.db_path) as conn:
+                    cursor = conn.execute(query, tuple(params))
+                    conn.commit()
+                    
+                    if cursor.rowcount == 0:
+                        return StorageResult(
+                            success=False, 
+                            message=f"Document ID {doc_id} not found."
+                        )
+                    
+                    return StorageResult(
+                        success=True, 
+                        message=f"Status updated to {status} (Retry logic applied if failed)."
+                    )
+            except Exception as e:
+                return StorageResult(
+                    success=False, 
+                    message=f"Database error: {str(e)}"
+                )      
+                           
+    # =======================================================================
+    # TIER 2: CHUNKS OPERATIONS (OCR & RAG)
+    # =======================================================================
+
+    def insert_ocr_chunks(self, chunks: list[dict]) -> StorageResult:
+        """
+        Inserts a batch of text chunks extracted by OCR into document_chunks table.
+        Each dict in chunks list should have: 
+        (doc_id, chunk_index, content, page_number, bbox, chunk_hash)
+        """
+        if not chunks:
+            return StorageResult(success=False, message="No chunks provided.")
+
+        query = """
+            INSERT INTO document_chunks (
+                doc_id, chunk_index, content, page_number, bbox, chunk_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """
+        try:
+            data_tuples = [
+                (c['doc_id'], c['chunk_index'], c['content'], 
+                 c.get('page_number'), c.get('bbox'), c.get('chunk_hash'))
+                for c in chunks
+            ]
+            
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany(query, data_tuples)
+                conn.commit()
+                
+            return StorageResult(
+                success=True, 
+                message=f"Successfully inserted {len(chunks)} chunks for Doc ID {chunks[0]['doc_id']}."
+            )
+        except Exception as e:
+            return StorageResult(success=False, message=f"Failed to insert chunks: {str(e)}")
+
+    def get_chunks_by_document(self, doc_id: int) -> StorageResult:
+        """
+        Retrieves all text chunks for a specific document, ordered by their index.
+        Useful for reconstructing the document text or feeding Tier 3.
+        """
+        query = "SELECT * FROM document_chunks WHERE doc_id = ? ORDER BY chunk_index ASC"
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(query, (doc_id,))
+                rows = cursor.fetchall()
+                
+                chunks = [dict(row) for row in rows]
+                return StorageResult(
+                    success=True,
+                    message=f"Retrieved {len(chunks)} chunks.",
+                    data=chunks
+                )
+        except Exception as e:
+            return StorageResult(success=False, message=f"Error fetching chunks: {str(e)}")
+
+    def search_in_text_content(self, query_text: str, limit: int = 10) -> StorageResult:
+        """
+        Simple Keyword search across all OCR-ed chunks.
+        Note: If you enabled FTS5, this query can be optimized to use 'MATCH'.
+        """
+        sql = """
+            SELECT c.*, d.title 
+            FROM document_chunks c
+            JOIN documents d ON c.doc_id = d.id
+            WHERE c.content LIKE ? 
+            LIMIT ?
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(sql, (f"%{query_text}%", limit))
+                results = [dict(row) for row in cursor.fetchall()]
+                
+                return StorageResult(
+                    success=True,
+                    message=f"Found {len(results)} matches for '{query_text}'.",
+                    data=results
+                )
+        except Exception as e:
+            return StorageResult(success=False, message=f"Search failed: {str(e)}")
+
+    def delete_chunks_by_document(self, doc_id: str) -> StorageResult:
+        """
+        Manually clear chunks for a document (e.g., if you want to re-run OCR).
+        Note: This is also handled by ON DELETE CASCADE if the document itself is deleted.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("DELETE FROM document_chunks WHERE doc_id = ?", (doc_id,))
+                conn.commit()
+                return StorageResult(success=True, message=f"Deleted {cursor.rowcount} chunks.")
+        except Exception as e:
+            return StorageResult(success=False, message=f"Failed to delete chunks: {str(e)}")                       
+
+    def reset_all_chunks(self) -> StorageResult:
+        """
+        ⚠ DANGER: Wipe only the OCR chunks tables and reset their ID counters.
+        Useful if you want to re-run the entire OCR pipeline from scratch
+        without losing the document metadata.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM document_chunks")
+                conn.execute("DELETE FROM corporate_chunks")
+                
+                conn.execute(
+                    "DELETE FROM sqlite_sequence WHERE name IN ('document_chunks', 'corporate_chunks')"
+                )
+                
+                conn.execute("UPDATE documents SET ocr_status = 'pending', ocr_processed_at = NULL")
+                conn.execute("UPDATE internal_documents SET ocr_status = 'pending', ocr_processed_at = NULL")
+                
+                conn.commit()
+                
+            return StorageResult(
+                success=True,
+                message="OCR chunks tables wiped and reset. All documents marked as 'pending' OCR.",
+            )
+        except Exception as e:
+            return StorageResult(success=False, message=f"Reset chunks failed: {e}")
+
+    def get_next_version_number(self, doc_id: str, is_internal: bool = False) -> int:
+            """
+            Calculates the next version number for a document's chunks by finding the 
+            current maximum version and incrementing it.
+
+            Args:
+                doc_id (int): The primary key of the document.
+
+            Returns:
+                int: The incremented version number (starting from 1).
+            """
+            table = self._chunks_table(is_internal)
+            query = f"SELECT MAX(version) FROM {table} WHERE doc_id = ?"
+            try:
+                with self._get_connection() as conn:
+                    result = conn.execute(query, (doc_id,)).fetchone()
+                    current_max = result[0] if result[0] is not None else 0
+                    return current_max + 1
+            except Exception as e:
+                # Default to version 1 if any database error occurs during check
+                return 1
+
+    def archive_old_chunks(self, doc_id: str, is_internal: bool = False) -> None:
+            """
+            Soft-deletes existing chunks for a document by setting 'is_active' to 0.
+            This preserves historical data for comparison while ensuring only the 
+            latest version is fetched during standard queries.
+
+            Args:
+                doc_id (int): The primary key of the document to archive.
+            """
+            table = self._chunks_table(is_internal)
+            query = f"UPDATE {table} SET is_active = 0 WHERE doc_id = ?"
+            try:
+                with self._get_connection() as conn:
+                    conn.execute(query, (doc_id,))
+                    conn.commit()
+            except Exception as e:
+                # Log error or handle as needed for your pipeline's robustness
+                print(f"Error archiving chunks for Doc ID {doc_id}: {e}")
+
+    def save_chunks(self, chunks: List[Dict[str, Any]], is_internal: bool = False) -> StorageResult:
+                """
+                Performs a bulk insert of OCR chunks including versioning and diff status.
+
+                Args:
+                    chunks (List[Dict[str, Any]]): A list of chunk dictionaries.
+                """
+                if not chunks:
+                    return StorageResult(success=False, message="No chunks to save.")
+
+                table = self._chunks_table(is_internal)
+                # Updated Query to include Diff Results
+                query = f"""
+                    INSERT INTO {table} (
+                        doc_id, chunk_id, chunk_index, content, bbox, 
+                        page_number, chunk_hash, is_active, version, 
+                        created_at, change_type, old_content
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                
+                try:
+                    data_to_insert = [
+                        (
+                            c.get('doc_id'), 
+                            c.get('chunk_id'), # New deterministic ID
+                            c.get('chunk_index'), 
+                            c.get('content'), 
+                            c.get('bbox'), 
+                            c.get('page_number'), 
+                            c.get('chunk_hash'), 
+                            c.get('is_active', 1), 
+                            c.get('version'), 
+                            c.get('created_at'),
+                            c.get('change_type', 'unchanged'), # Default to unchanged if not analyzed
+                            c.get('old_content', None)         # Added for modified chunks
+                        )
+                        for c in chunks
+                    ]
+                    
+                    with self._get_connection() as conn:
+                        conn.executemany(query, data_to_insert)
+                        conn.commit()
+                        
+                    version_num = chunks[0].get('version', 'N/A')
+                    return StorageResult(
+                        success=True, 
+                        message=f"Successfully saved {len(chunks)} chunks (Version {version_num})."
+                    )
+                except Exception as e:
+                    return StorageResult(success=False, message=f"Failed to save chunks: {str(e)}")
+
+    def get_chunks_by_version(self, doc_id: str, version: int, is_internal: bool = False) -> List[Dict[str, Any]]:
+        """
+        Retrieves all chunks belonging to a specific version of a document.
+        Useful for auditing or restoring old data.
+        """
+        table = self._chunks_table(is_internal)
+        query = f"""
+            SELECT chunk_id, chunk_index, content, bbox, page_number, chunk_hash, 
+                   is_active, version, created_at, change_type, old_content
+            FROM {table} 
+            WHERE doc_id = ? AND version = ?
+            ORDER BY chunk_index ASC
+        """
+        try:
+            with self._get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(query, (doc_id, version))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"[!] Error retrieving chunks by version: {e}")
+            return []
+
+    def get_latest_chunks(self, doc_id: str, is_internal: bool = False) -> List[Dict[str, Any]]:
+        """
+        Retrieves the current active (latest) chunks for a document.
+        This is used in the OCR Pipeline to provide a base for comparison (Diff).
+        """
+        table = self._chunks_table(is_internal)
+        query = f"""
+            SELECT chunk_id, chunk_index, content, bbox, page_number, chunk_hash, 
+                   is_active, version, created_at
+            FROM {table} 
+            WHERE doc_id = ? AND is_active = 1
+            ORDER BY chunk_index ASC
+        """
+        try:
+            with self._get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(query, (doc_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"[!] Error retrieving latest active chunks: {e}")
+            return []
+
+
+ ### FOR LLM USAGE 
+    def get_active_chunks(self, doc_id: str, is_internal: bool = False) -> List[Dict[str, Any]]:
+        """
+        Retrieves only the most recent (active) chunks for a document.
+        Used for standard RAG/Question-Answering.
+        """
+        table = self._chunks_table(is_internal)
+        query = f"""
+            SELECT chunk_id, chunk_index, content, page_number, chunk_hash
+            FROM {table} 
+            WHERE doc_id = ? AND is_active = 1
+            ORDER BY chunk_index ASC
+        """
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, (doc_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_chunk_history(self, doc_id: str, chunk_index: int, is_internal: bool = False) -> List[Dict[str, Any]]:
+        """
+        Retrieves all historical versions of a specific chunk.
+        Allows the LLM to explain what changed between versions.
+        """
+        table = self._chunks_table(is_internal)
+        query = f"""
+            SELECT version, content, change_type, old_content, created_at
+            FROM {table} 
+            WHERE doc_id = ? AND chunk_index = ?
+            ORDER BY version DESC
+        """
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, (doc_id, chunk_index))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_version_changes(self, doc_id: str, version: int, is_internal: bool = False) -> List[Dict[str, Any]]:
+        """
+        Retrieves only the modified or added chunks for a specific version.
+        Used for generating 'What's New' summaries via LLM.
+        """
+        table = self._chunks_table(is_internal)
+        query = f"""
+            SELECT chunk_index, content, change_type, old_content
+            FROM {table} 
+            WHERE doc_id = ? AND version = ? AND change_type IN ('modified', 'added', 'deleted')
+        """
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, (doc_id, version))
+            return [dict(row) for row in cursor.fetchall()]        

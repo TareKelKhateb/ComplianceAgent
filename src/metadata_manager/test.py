@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 from src.metadata_manager import MetadataStore
 
 manager = MetadataStore() 

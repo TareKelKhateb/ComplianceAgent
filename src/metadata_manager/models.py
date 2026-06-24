@@ -17,6 +17,7 @@ class DocumentMetadata:
     Represents the metadata scraped by the ingestion team.
     This is what your teammates pass IN to the storage layer.
     """
+    id: str                                    # Required: Custom ID (e.g., "01_banking_laws")
     file_url: str                              # Required: URL of the PDF
     title: Optional[str] = None
     document_type: Optional[str] = None       # e.g. "LAW", "REGULATION"
@@ -25,6 +26,8 @@ class DocumentMetadata:
     year: Optional[str] = None
     date: Optional[str] = None                # ISO string e.g. "2024-01-15"
     language: Optional[str] = None
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
 
 
 @dataclass
@@ -34,7 +37,7 @@ class StoredDocument:
     Includes everything in DocumentMetadata plus storage-layer fields.
     """
     # --- Identity ---
-    id: int
+    id: str
     file_url: str
 
     # --- Scraped Metadata ---
@@ -45,6 +48,8 @@ class StoredDocument:
     year: Optional[str]
     date: Optional[str]
     language: Optional[str]
+    category: Optional[str]
+    subcategory: Optional[str]
 
     # --- Storage Layer Fields ---
     sha256_hash: str                           # Hash of PDF binary content
@@ -54,6 +59,10 @@ class StoredDocument:
     file_size_bytes: Optional[int]             # Size of downloaded PDF
     download_status: str                       # "pending" | "downloaded" | "failed"
     created_at: str                            # ISO timestamp of when record was inserted
+
+    ocr_status: str = "pending"
+    ocr_processed_at: Optional[str] = None    
+    retry_count: int = 0
 
 
 @dataclass
@@ -81,3 +90,20 @@ class BatchStorageResult:
     inserted_count: int
     failed_count: int
     errors: list[str] = field(default_factory=list)
+
+@dataclass
+class StoredChunk:
+    """
+    Represents a single OCR chunk stored in the database.
+    """
+    id: Optional[int]
+    doc_id: str
+    chunk_index: int
+    content: str
+    bbox: Optional[str]
+    page_number: Optional[int]
+    chunk_hash: str    
+    is_active: int = 1 
+    version: int = 1
+    change_type: str = "unchanged" 
+    old_content: Optional[str] = None 

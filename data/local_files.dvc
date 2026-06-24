@@ -1,0 +1,6 @@
+outs:
+- md5: 8e4cfe6c42647e33fa0742da8bbdce79.dir
+  size: 110983
+  nfiles: 2
+  hash: md5
+  path: local_files
