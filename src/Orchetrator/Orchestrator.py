@@ -234,6 +234,8 @@ class Orchestrator:
 
         logger.info("Initialising Parsing & Metadata Extractor…")
         self._parsing_extractor = ParsingMetaDataExtractor(metadata_store=self._store)
+
+        logger.info("Resetting Metadata…")
         # self._parsing_extractor.reset_metadate()
 
         logger.info("Initialising OCR Pipeline…")
@@ -441,7 +443,7 @@ class Orchestrator:
         url: str | None = None,
         is_crawl: bool = False,
         limit: int = 1,
-    ) -> None:
+    ) -> str | None:
         """
         Execute a full orchestration cycle (all pipeline stages in order).
 
@@ -453,6 +455,12 @@ class Orchestrator:
             Whether to crawl multiple pages when scraping.
         limit : int
             Crawl page limit.
+
+        Returns
+        -------
+        str | None
+            The review URL if a human-review session was created, or None
+            if the pipeline ran to completion without user adjustments.
         """
         logger.info("=" * 60)
         logger.info("STARTING PIPELINE ORCHESTRATION CYCLE")
@@ -462,7 +470,7 @@ class Orchestrator:
         records = self._stage_acquire(url=url, is_crawl=is_crawl, limit=limit)
         if not records:
             logger.error("Aborting orchestration cycle: no records to process.")
-            return
+            return None
 
         if self.use_adjustments:
             logger.info("Creating a metadata review session on the User Adjustments API…")
@@ -491,7 +499,7 @@ class Orchestrator:
                 logger.info("=" * 60)
                 logger.info("ORCHESTRATION PAUSED — AWAITING HUMAN REVIEW & APPROVAL")
                 logger.info("=" * 60)
-                return
+                return review_url
             except requests.exceptions.ConnectionError:
                 logger.error(
                     "Cannot reach the User Adjustments API at '%s'. "
@@ -515,6 +523,7 @@ class Orchestrator:
         logger.info("=" * 60)
         logger.info("ORCHESTRATION CYCLE FINISHED")
         logger.info("=" * 60)
+        return None
 
 
 # ---------------------------------------------------------------------------
