@@ -17,8 +17,12 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+from dotenv import load_dotenv
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+# Load environment variables from .env file
+load_dotenv()
+
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -127,47 +131,50 @@ class LogEntry(BaseModel):
 # 1. POST /api/scrape — Trigger URL scraping
 # ===================================================================
 
+def run_orchestrator_background(url: str, is_crawl: bool, limit: int):
+    """Background task to run URL scraping via Orchestrator."""
+    logger.info("Background scrape task starting: url=%s, crawl=%s, limit=%d", url, is_crawl, limit)
+    try:
+        from src.Orchetrator.Orchestrator import Orchestrator
+        orchestrator = Orchestrator(push_to_dagshub=False, use_adjustments=True)
+        review_url = orchestrator.run(
+            url=url,
+            is_crawl=is_crawl,
+            limit=limit,
+        )
+        if review_url:
+            logger.info("Background scrape task completed. Review URL: %s", review_url)
+        else:
+            logger.info("Background scrape task completed. No review URL generated.")
+    except Exception as exc:
+        logger.exception("Background scrape task failed: %s", exc)
+
+
 @app.post(
     "/api/scrape",
     response_model=ScrapeResponse,
-    summary="Scrape a URL and create a review session",
+    summary="Scrape a URL in the background and create a review session",
 )
-async def scrape_url(body: ScrapeRequest):
+async def scrape_url(body: ScrapeRequest, background_tasks: BackgroundTasks):
     """
-    Trigger the Orchestrator to scrape a URL.
+    Trigger the Orchestrator to scrape a URL in the background.
     Creates a review session on the User Adjustments API and sends
     a notification email with the review link.
     """
     logger.info("Scrape request received: url=%s, crawl=%s, limit=%d", body.url, body.is_crawl, body.limit)
 
-    try:
-        from src.Orchetrator.Orchestrator import Orchestrator
+    background_tasks.add_task(
+        run_orchestrator_background,
+        body.url,
+        body.is_crawl,
+        body.limit,
+    )
 
-        orchestrator = Orchestrator(push_to_dagshub=False, use_adjustments=True)
-        review_url = orchestrator.run(
-            url=body.url,
-            is_crawl=body.is_crawl,
-            limit=body.limit,
-        )
-
-        if review_url:
-            logger.info("Scrape successful. Review URL: %s", review_url)
-            return ScrapeResponse(
-                success=True,
-                message="Documents scraped successfully. A review session has been created and an email notification sent.",
-                review_url=review_url,
-            )
-        else:
-            logger.info("Scrape completed but no review session was created (pipeline ran to completion).")
-            return ScrapeResponse(
-                success=True,
-                message="Scrape completed. Pipeline processed all documents directly (no review session needed).",
-                review_url=None,
-            )
-
-    except Exception as exc:
-        logger.exception("Scrape failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Scrape failed: {exc}")
+    return ScrapeResponse(
+        success=True,
+        message="Scraping has started in the background. You will receive an email notification with the review link once it finishes.",
+        review_url=None,
+    )
 
 
 # ===================================================================

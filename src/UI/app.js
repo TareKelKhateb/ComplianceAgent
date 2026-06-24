@@ -190,7 +190,7 @@ scrapeForm.addEventListener('submit', async (e) => {
                 10000
             );
         } else {
-            showToast('success', 'Scraping Complete', data.message);
+            showToast('success', 'Scraping Started', data.message);
         }
 
         scrapeForm.reset();

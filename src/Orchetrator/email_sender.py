@@ -2,6 +2,9 @@ import os
 import smtplib
 import logging
 from email.mime.text import MIMEText
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger("EmailSender")
 
