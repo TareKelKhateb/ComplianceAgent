@@ -39,17 +39,6 @@
                 </svg>
                 <span>Data</span>
             </button>
-
-            <button class="nav-item" data-view="logs" id="nav-logs">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14,2 14,8 20,8"/>
-                    <line x1="16" y1="13" x2="8" y2="13"/>
-                    <line x1="16" y1="17" x2="8" y2="17"/>
-                    <polyline points="10,9 9,9 8,9"/>
-                </svg>
-                <span>Logs</span>
-            </button>
         </nav>
 
         <div class="sidebar-footer">
@@ -200,52 +189,6 @@
                         <div class="loading-spinner"></div>
                         <p class="loading-text">Uploading files…</p>
                         <p class="loading-hint">Creating review session</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- ====================================================== -->
-        <!-- LOGS VIEW                                               -->
-        <!-- ====================================================== -->
-        <section class="view" id="view-logs">
-            <div class="logs-container">
-                <!-- Log file selector -->
-                <div class="logs-toolbar">
-                    <div class="logs-selector-group">
-                        <label for="log-file-select" class="form-label">Log File</label>
-                        <select id="log-file-select" class="form-input form-select">
-                            <option value="">Select a log file…</option>
-                        </select>
-                    </div>
-                    <div class="logs-actions">
-                        <div class="form-group">
-                            <label for="log-tail-lines" class="form-label">Lines</label>
-                            <input type="number" id="log-tail-lines" class="form-input small-input" value="200" min="10" max="5000">
-                        </div>
-                        <button type="button" class="btn btn-secondary" id="btn-refresh-log">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <polyline points="23,4 23,10 17,10"/>
-                                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                            </svg>
-                            <span>Refresh</span>
-                        </button>
-                        <label class="toggle auto-refresh-toggle" for="log-auto-refresh">
-                            <input type="checkbox" id="log-auto-refresh">
-                            <span class="toggle-slider"></span>
-                            <span class="toggle-label">Auto</span>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- Log viewer -->
-                <div class="log-viewer" id="log-viewer">
-                    <div class="log-empty">
-                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                            <polyline points="14,2 14,8 20,8"/>
-                        </svg>
-                        <p>Select a log file to view its contents</p>
                     </div>
                 </div>
             </div>

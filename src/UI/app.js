@@ -46,12 +46,7 @@ const fileList = $('#file-list');
 const btnUpload = $('#btn-upload');
 const uploadLoading = $('#upload-loading');
 
-// Logs
-const logFileSelect = $('#log-file-select');
-const logTailLines = $('#log-tail-lines');
-const btnRefreshLog = $('#btn-refresh-log');
-const logAutoRefresh = $('#log-auto-refresh');
-const logViewer = $('#log-viewer');
+
 
 // Status
 const statusIndicator = $('#status-indicator');
@@ -63,14 +58,12 @@ const toastContainer = $('#toast-container');
 // State
 // ===================================================================
 let selectedFiles = [];
-let logRefreshTimer = null;
 
 // ===================================================================
 // View / Tab Switching
 // ===================================================================
 const VIEW_META = {
     data: { title: 'Data Ingestion', subtitle: 'Scrape URLs or upload compliance documents for processing' },
-    logs: { title: 'System Logs', subtitle: 'Monitor orchestrator activity and email notifications' },
 };
 
 function switchView(viewName) {
@@ -89,10 +82,7 @@ function switchView(viewName) {
     pageTitle.textContent = meta.title || viewName;
     pageSubtitle.textContent = meta.subtitle || '';
 
-    // Trigger view-specific init
-    if (viewName === 'logs') {
-        loadLogFileList();
-    }
+
 }
 
 navItems.forEach(item => {
@@ -327,109 +317,7 @@ btnUpload.addEventListener('click', async () => {
     }
 });
 
-// ===================================================================
-// Logs
-// ===================================================================
-async function loadLogFileList() {
-    try {
-        const response = await fetch(`${API_BASE}/api/logs`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const logs = await response.json();
 
-        // Preserve current selection
-        const currentValue = logFileSelect.value;
-        logFileSelect.innerHTML = '<option value="">Select a log file…</option>';
-
-        for (const log of logs) {
-            const opt = document.createElement('option');
-            opt.value = log.name;
-            const sizeStr = log.size_bytes < 1024
-                ? `${log.size_bytes} B`
-                : `${(log.size_bytes / 1024).toFixed(1)} KB`;
-            opt.textContent = `${log.name} (${sizeStr})`;
-            logFileSelect.appendChild(opt);
-        }
-
-        // Restore selection
-        if (currentValue && logs.find(l => l.name === currentValue)) {
-            logFileSelect.value = currentValue;
-        }
-    } catch (err) {
-        console.error('Failed to load log file list:', err);
-    }
-}
-
-async function loadLogContent() {
-    const filename = logFileSelect.value;
-    if (!filename) {
-        logViewer.innerHTML = `
-            <div class="log-empty">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
-                <p>Select a log file to view its contents</p>
-            </div>
-        `;
-        return;
-    }
-
-    const tail = parseInt(logTailLines.value, 10) || 200;
-
-    try {
-        const response = await fetch(`${API_BASE}/api/logs/${encodeURIComponent(filename)}?tail=${tail}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-
-        // Syntax highlight the log content
-        const highlighted = highlightLog(data.content);
-        logViewer.innerHTML = `<pre>${highlighted}</pre>`;
-
-        // Auto-scroll to bottom
-        logViewer.scrollTop = logViewer.scrollHeight;
-    } catch (err) {
-        logViewer.innerHTML = `<pre style="color: #F85149;">Error loading log: ${err.message}</pre>`;
-    }
-}
-
-function highlightLog(content) {
-    return content
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .split('\n')
-        .map(line => {
-            if (/\[ERROR\]|ERROR|❌|FAIL/i.test(line)) {
-                return `<span class="log-line-error">${line}</span>`;
-            }
-            if (/\[WARNING\]|WARNING|⚠️/i.test(line)) {
-                return `<span class="log-line-warning">${line}</span>`;
-            }
-            if (/\[DEBUG\]/i.test(line)) {
-                return `<span class="log-line-debug">${line}</span>`;
-            }
-            if (/\[INFO\]|INFO|✅|📄|📋|⚡|🔑/i.test(line)) {
-                return `<span class="log-line-info">${line}</span>`;
-            }
-            return line;
-        })
-        .join('\n');
-}
-
-logFileSelect.addEventListener('change', loadLogContent);
-btnRefreshLog.addEventListener('click', () => {
-    loadLogFileList();
-    loadLogContent();
-});
-
-logAutoRefresh.addEventListener('change', () => {
-    if (logAutoRefresh.checked) {
-        logRefreshTimer = setInterval(() => {
-            loadLogContent();
-        }, LOG_REFRESH_INTERVAL);
-        showToast('info', 'Auto-Refresh', `Logs will refresh every ${LOG_REFRESH_INTERVAL / 1000}s.`, 3000);
-    } else {
-        clearInterval(logRefreshTimer);
-        logRefreshTimer = null;
-    }
-});
 
 // ===================================================================
 // Health Check
