@@ -46,11 +46,17 @@ def retrieve_docs(state: AgentState) -> Dict[str, Any]:
     
     # Dynamically pull from whichever databases the router selected
     if "internal_policies" in destinations:
-        retriever = db_internal.as_retriever()
+        retriever = db_internal.as_retriever(                                  
+            search_type="similarity_score_threshold",
+            search_kwargs={"k": 3, "score_threshold": 0.6}
+            )
         all_docs.extend(retriever.invoke(question))
         
     if "external_regulations" in destinations:
-        retriever = db_external.as_retriever()
+        retriever = db_external.as_retriever(
+            search_type="similarity_score_threshold",
+            search_kwargs={"k": 3, "score_threshold": 0.6}
+            )
         all_docs.extend(retriever.invoke(question))
         
     return {"documents": all_docs}

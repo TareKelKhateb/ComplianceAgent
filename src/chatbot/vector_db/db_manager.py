@@ -74,9 +74,13 @@ class IncrementalVectorManager:
         print(f"[{self.collection_name}] Synchronization complete: {indexing_result}")
         return indexing_result
 
-    def as_retriever(self, search_kwargs: dict = None):
+    def as_retriever(self, search_kwargs: dict = None, search_type: str = "similarity"):
         """
-        Exposes the active Chroma collection as a retriever object for the router.
+        Exposes the active Chroma collection as a retriever object.
+        search_type can be "similarity" or "mmr"
         """
         kwargs = search_kwargs or {"k": 4}
-        return self.vector_store.as_retriever(search_kwargs=kwargs)
+        return self.vector_store.as_retriever(
+            search_type=search_type, 
+            search_kwargs=kwargs
+        )
