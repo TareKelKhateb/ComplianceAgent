@@ -34,7 +34,7 @@ import requests as http_requests
 # Ensure project root is on sys.path
 # ---------------------------------------------------------------------------
 ROOT_DIR = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
@@ -77,7 +77,7 @@ app.add_middleware(
 # Serve UI
 # ---------------------------------------------------------------------------
 
-UI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "UI")
+UI_DIR = os.path.join(ROOT_DIR, "src", "UI")
 
 
 @app.get("/", include_in_schema=False)

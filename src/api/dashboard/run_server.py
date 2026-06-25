@@ -4,9 +4,9 @@ run_server.py
 Uvicorn entry point for the Dashboard API.
 
 Usage:
-    python -m src.api.run_server
+    python -m src.api.dashboard.run_server
     # or
-    python src/api/run_server.py
+    python src/api/dashboard/run_server.py
 """
 
 import os
@@ -15,7 +15,7 @@ import logging
 
 # Ensure project root is on sys.path
 _ROOT = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -32,7 +32,7 @@ def main() -> None:
     )
 
     uvicorn.run(
-        "src.api.app:app",
+        "src.api.dashboard.app:app",
         host="0.0.0.0",
         port=8081,
         reload=True,
