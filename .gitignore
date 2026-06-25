@@ -252,4 +252,4 @@ output_markdown
 output_markdown/
 
 uv.lock
-src/chatbot/storage/
+src/chatbot/storage/*

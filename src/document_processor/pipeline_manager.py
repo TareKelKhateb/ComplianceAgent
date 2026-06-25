@@ -323,6 +323,7 @@ class OCRPipeline:
             self.store.update_ocr_status(doc_id, "completed", is_internal=is_internal)
             score = self.diff_engine.get_similarity_score(base_chunks, final_chunks)
             print(f"[+] Pipeline complete — 0 new/modified chunks. No changes detected. | Similarity: {score}%")
+            self._sync_to_vector_db(final_chunks, doc_id, is_internal)
             return True
 
         save_result = self.store.save_chunks(to_save, is_internal=is_internal)
@@ -331,11 +332,25 @@ class OCRPipeline:
             self.store.update_ocr_status(doc_id, "completed", is_internal=is_internal)
             score = self.diff_engine.get_similarity_score(base_chunks, final_chunks)
             print(f"[+] Pipeline complete — {len(to_save)} new/modified chunks saved | Similarity: {score}%")
+            self._sync_to_vector_db(final_chunks, doc_id, is_internal)
             return True
         else:
             print(f"[!] Storage failed: {save_result.message}")
             self.store.update_ocr_status(doc_id, "failed", is_internal=is_internal)
             return False
+
+    def _sync_to_vector_db(self, final_chunks: List[Dict[str, Any]], doc_id: str, is_internal: bool) -> None:
+        """Sync finalized chunks to the chatbot's Chroma vector database (non-fatal)."""
+        try:
+            from src.chatbot.vector_db.vector_db_sync import sync_chunks_to_vectordb
+            result = sync_chunks_to_vectordb(
+                chunks=final_chunks,
+                doc_id=doc_id,
+                is_internal=is_internal,
+            )
+            print(f"[+] Vector DB sync complete for Doc ID {doc_id}: {result}")
+        except Exception as vdb_exc:
+            print(f"[!] Vector DB sync failed for Doc ID {doc_id} (non-fatal): {vdb_exc}")
 
     def _handle_pipeline_failure(self, doc_id: str, exc: Exception, is_internal: bool = False):
         """Logs errors and updates DB status."""
