@@ -250,3 +250,6 @@ local_download/
 dvc.lock
 output_markdown
 output_markdown/
+
+uv.lock
+src/chatbot/storage/
