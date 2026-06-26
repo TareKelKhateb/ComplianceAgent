@@ -1,3 +1,7 @@
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+
 from typing import Dict, Any
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver # NEW: In-memory checkpointer
@@ -48,14 +52,14 @@ def retrieve_docs(state: AgentState) -> Dict[str, Any]:
     if "internal_policies" in destinations:
         retriever = db_internal.as_retriever(                                  
             search_type="similarity_score_threshold",
-            search_kwargs={"k": 3, "score_threshold": 0.6}
+            search_kwargs={"k": 10, "score_threshold": 0.45}
             )
         all_docs.extend(retriever.invoke(question))
         
     if "external_regulations" in destinations:
         retriever = db_external.as_retriever(
             search_type="similarity_score_threshold",
-            search_kwargs={"k": 3, "score_threshold": 0.6}
+            search_kwargs={"k": 10, "score_threshold": 0.45}
             )
         all_docs.extend(retriever.invoke(question))
         

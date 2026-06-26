@@ -1,6 +1,10 @@
 import os
 import sys
 
+# Reconfigure stdout/stderr to use UTF-8 to prevent charmap encoding errors under Windows
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+
 # Ensure project root and src are on sys.path before importing chatbot modules
 _API_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_API_DIR))))
