@@ -1,3 +1,13 @@
+import os
+import sys
+
+# Ensure project root and src are on sys.path before importing chatbot modules
+_API_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_API_DIR))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+    sys.path.insert(0, os.path.join(_PROJECT_ROOT, "src"))
+
 from fastapi import FastAPI, HTTPException
 from langchain_core.messages import HumanMessage
 from chatbot.api.server.schemas import ChatRequest, ChatResponse, SourceDetail

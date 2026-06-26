@@ -46,6 +46,12 @@
                 </svg>
                 <span>Approvals</span>
             </button>
+            <button class="nav-item" data-view="chatbot" id="nav-chatbot">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span>Chatbot</span>
+            </button>
         </nav>
 
         <div class="sidebar-footer">
@@ -221,6 +227,50 @@
                     </svg>
                     <h3 class="empty-title">All Chunks Approved</h3>
                     <p class="empty-desc">There are no pending regulatory chunk modifications. All laws are verified and active.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ====================================================== -->
+        <!-- CHATBOT VIEW                                           -->
+        <!-- ====================================================== -->
+        <section class="view" id="view-chatbot">
+            <div class="chat-container">
+                <!-- Chat Messages Area -->
+                <div class="chat-messages" id="chat-messages">
+                    <div class="chat-welcome" id="chat-welcome">
+                        <div class="chat-welcome-icon">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                            </svg>
+                        </div>
+                        <h3>Compliance Assistant</h3>
+                        <p>Ask questions about regulatory policies, compliance requirements, and legal documents.</p>
+                        <div class="chat-welcome-chips">
+                            <button class="chip-btn" onclick="sendQuickQuestion(this)">What AML regulations apply to banks?</button>
+                            <button class="chip-btn" onclick="sendQuickQuestion(this)">Summarize the banking law requirements</button>
+                            <button class="chip-btn" onclick="sendQuickQuestion(this)">What are the KYC obligations?</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat Input Bar -->
+                <div class="chat-input-bar">
+                    <div class="chat-input-wrapper">
+                        <textarea id="chat-input" 
+                                  class="chat-input" 
+                                  placeholder="Ask a compliance question..." 
+                                  rows="1"
+                                  onkeydown="handleChatKeydown(event)"
+                                  oninput="autoResizeChatInput(this)"></textarea>
+                        <button id="chat-send-btn" class="btn-send" onclick="sendChatMessage()" title="Send message">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="chat-input-hint">Press Enter to send · Shift+Enter for new line</div>
                 </div>
             </div>
         </section>

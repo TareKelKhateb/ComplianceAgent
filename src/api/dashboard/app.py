@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import httpx
 import requests as http_requests
 
 # ---------------------------------------------------------------------------
@@ -432,3 +433,42 @@ async def approve_chunk(chunk_id: int):
     except Exception as exc:
         logger.exception("Failed to approve chunk %d: %s", chunk_id, exc)
         raise HTTPException(status_code=500, detail=f"Failed to approve chunk: {exc}")
+
+
+# ===================================================================
+# 8. POST /api/chat — Proxy to the Chatbot API
+# ===================================================================
+
+CHATBOT_API_URL = os.getenv("CHATBOT_API_URL", "http://localhost:8082")
+
+@app.post(
+    "/api/chat",
+    summary="Proxy chat requests to the Chatbot API",
+)
+async def proxy_chat(body: dict):
+    """
+    Forward chat requests to the separate Chatbot API server.
+    Expects ``{"question": "...", "thread_id": "..."}``.
+    Returns the chatbot response as-is (answer, sources_used, routed_destinations).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{CHATBOT_API_URL}/api/v1/chat",
+                json=body,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.ConnectError:
+        raise HTTPException(
+            status_code=503,
+            detail="Chatbot service is unavailable. Make sure it is running on port 8082.",
+        )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"Chatbot API error: {e.response.text}",
+        )
+    except Exception as e:
+        logger.exception("Unexpected error proxying chat request.")
+        raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")

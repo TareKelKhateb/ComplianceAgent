@@ -65,6 +65,7 @@ let selectedFiles = [];
 const VIEW_META = {
     data: { title: 'Data Ingestion', subtitle: 'Scrape URLs or upload compliance documents for processing' },
     approvals: { title: 'Regulatory Approvals', subtitle: 'Review and approve modifications to active law segments' },
+    chatbot: { title: 'Compliance Assistant', subtitle: 'Ask questions about regulatory policies, compliance requirements, and legal documents' },
 };
 
 function switchView(viewName) {
@@ -520,6 +521,334 @@ function escapeHTML(str) {
 }
 
 // ===================================================================
+// Chatbot Logic
+// ===================================================================
+const chatMessagesEl = $('#chat-messages');
+const chatInputEl = $('#chat-input');
+const chatSendBtn = $('#chat-send-btn');
+
+// Generate unique thread ID for LangGraph session
+const chatThreadId = 'thread_' + Math.random().toString(36).substring(2, 15);
+let isChatLoading = false;
+
+// Auto-resize chat textarea
+window.autoResizeChatInput = function(el) {
+    el.style.height = 'auto';
+    el.style.height = (el.scrollHeight) + 'px';
+};
+
+// Keyboard handler
+window.handleChatKeydown = function(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendChatMessage();
+    }
+};
+
+// Quick questions handler
+window.sendQuickQuestion = function(btn) {
+    if (isChatLoading) return;
+    const text = btn.textContent.trim();
+    chatInputEl.value = text;
+    autoResizeChatInput(chatInputEl);
+    sendChatMessage();
+};
+
+// Send message to backend proxy
+window.sendChatMessage = async function() {
+    const text = chatInputEl.value.trim();
+    if (!text || isChatLoading) return;
+
+    isChatLoading = true;
+    chatInputEl.value = '';
+    autoResizeChatInput(chatInputEl);
+    chatInputEl.disabled = true;
+    chatSendBtn.disabled = true;
+
+    // Remove welcome screen if it's there
+    const welcomeScreen = $('#chat-welcome');
+    if (welcomeScreen) {
+        welcomeScreen.remove();
+    }
+
+    // Render User Message
+    renderMessage('user', text);
+    scrollToBottom();
+
+    // Show typing indicator
+    showTypingIndicator();
+    scrollToBottom();
+
+    try {
+        const response = await fetch(`${API_BASE}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                question: text,
+                thread_id: chatThreadId
+            })
+        });
+
+        const data = await response.json();
+
+        // Remove typing indicator
+        removeTypingIndicator();
+
+        if (!response.ok) {
+            throw new Error(data.detail || `HTTP ${response.status}`);
+        }
+
+        // Render Bot Message
+        renderMessage('bot', data.answer, data.sources_used, data.routed_destinations);
+    } catch (err) {
+        removeTypingIndicator();
+        renderErrorMessage(err.message || 'Something went wrong.');
+    } finally {
+        isChatLoading = false;
+        chatInputEl.disabled = false;
+        chatSendBtn.disabled = false;
+        chatInputEl.focus();
+        scrollToBottom();
+    }
+};
+
+function renderMessage(sender, text, sources = [], routes = []) {
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `chat-msg ${sender}`;
+
+    let avatarSvg = '';
+    if (sender === 'user') {
+        avatarSvg = `
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+            </svg>
+        `;
+    } else {
+        avatarSvg = `
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+        `;
+    }
+
+    const avatarHtml = `<div class="chat-msg-avatar">${avatarSvg}</div>`;
+    
+    let contentHtml = `<div class="chat-msg-content">${sender === 'user' ? escapeHTML(text) : renderMarkdown(text)}</div>`;
+
+    // Add route badges & sources if bot message
+    let extraHtml = '';
+    if (sender === 'bot') {
+        let routesHtml = '';
+        if (routes && routes.length > 0) {
+            const badges = routes.map(r => `<span class="route-badge">📁 ${escapeHTML(r.replace('_', ' '))}</span>`).join('');
+            routesHtml = `<div class="chat-route-badges">${badges}</div>`;
+        }
+
+        let sourcesHtml = '';
+        if (sources && sources.length > 0) {
+            const chips = sources.map((src, idx) => {
+                const uniqueId = `src-${Date.now()}-${idx}`;
+                const truncatedContent = src.content.length > 200 
+                    ? escapeHTML(src.content.substring(0, 200)) + '...'
+                    : escapeHTML(src.content);
+                const hasMore = src.content.length > 200;
+
+                return `
+                    <div class="source-chip" onclick="toggleSourceExpand(this)">
+                        <div class="source-chip-header">
+                            <span class="source-chip-id">📄 ${escapeHTML(src.source_id)}</span>
+                        </div>
+                        <div class="source-chip-content truncated" id="${uniqueId}">
+                            ${truncatedContent}
+                            ${hasMore ? `<span class="source-chip-expand">Show more</span>` : ''}
+                        </div>
+                        <div class="source-chip-full-content" style="display:none;">${escapeHTML(src.content)}</div>
+                    </div>
+                `;
+            }).join('');
+
+            sourcesHtml = `
+                <div class="chat-sources">
+                    <button class="chat-sources-toggle" onclick="toggleSources(this)">
+                        <span>📎 ${sources.length} Sources Referenced</span>
+                        <span class="toggle-arrow">▼</span>
+                    </button>
+                    <div class="chat-sources-list">
+                        ${chips}
+                    </div>
+                </div>
+            `;
+        }
+        
+        extraHtml = routesHtml + sourcesHtml;
+    }
+
+    msgDiv.innerHTML = `
+        ${sender === 'bot' ? avatarHtml : ''}
+        <div class="chat-msg-bubble">
+            ${contentHtml}
+            ${extraHtml}
+        </div>
+        ${sender === 'user' ? avatarHtml : ''}
+    `;
+
+    chatMessagesEl.appendChild(msgDiv);
+}
+
+function showTypingIndicator() {
+    const indicator = document.createElement('div');
+    indicator.className = 'chat-typing';
+    indicator.id = 'chat-typing-indicator';
+    indicator.innerHTML = `
+        <div class="chat-msg-avatar">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+        </div>
+        <div class="typing-dots">
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+        </div>
+    `;
+    chatMessagesEl.appendChild(indicator);
+}
+
+function removeTypingIndicator() {
+    const indicator = $('#chat-typing-indicator');
+    if (indicator) {
+        indicator.remove();
+    }
+}
+
+function renderErrorMessage(msg) {
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'chat-msg bot';
+    errorDiv.innerHTML = `
+        <div class="chat-msg-avatar" style="background: rgba(231, 76, 60, 0.1); border-color: rgba(231, 76, 60, 0.3); color: var(--error);">
+            ⚠️
+        </div>
+        <div class="chat-msg-bubble">
+            <div class="chat-error">
+                <span><strong>Error:</strong> ${escapeHTML(msg)}</span>
+            </div>
+        </div>
+    `;
+    chatMessagesEl.appendChild(errorDiv);
+}
+
+window.toggleSources = function(btn) {
+    const parent = btn.closest('.chat-sources');
+    const list = parent.querySelector('.chat-sources-list');
+    const isExpanded = btn.classList.toggle('expanded');
+    list.classList.toggle('visible', isExpanded);
+};
+
+window.toggleSourceExpand = function(chip) {
+    const content = chip.querySelector('.source-chip-content');
+    const fullContentEl = chip.querySelector('.source-chip-full-content');
+    
+    if (!content || !fullContentEl) return;
+    
+    if (content.classList.contains('truncated')) {
+        content.classList.remove('truncated');
+        content.classList.add('expanded');
+        content.innerHTML = fullContentEl.innerHTML + ` <span class="source-chip-expand">Show less</span>`;
+    } else {
+        content.classList.add('truncated');
+        content.classList.remove('expanded');
+        const originalText = fullContentEl.innerHTML;
+        const truncatedText = originalText.length > 200 
+            ? originalText.substring(0, 200) + '...'
+            : originalText;
+        content.innerHTML = truncatedText + ` <span class="source-chip-expand">Show more</span>`;
+    }
+};
+
+function scrollToBottom() {
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+function renderMarkdown(md) {
+    if (!md) return '';
+    
+    // Escape HTML first
+    let html = escapeHTML(md);
+
+    // Code blocks
+    html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+
+    // Inline code
+    html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+    // Headings
+    html = html.replace(/^#### (.*?)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^### (.*?)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.*?)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.*?)$/gm, '<h1>$1</h1>');
+
+    // Blockquotes
+    html = html.replace(/^&gt;[ \t]?(.*?)$/gm, '<blockquote>$1</blockquote>');
+
+    // Lists
+    html = html.replace(/^\s*[-*+]\s+(.*?)$/gm, '<ul><li>$1</li></ul>');
+    html = html.replace(/<\/ul>\s*<ul>/g, ''); // Merge consecutive ul blocks
+
+    html = html.replace(/^\s*\d+\.\s+(.*?)$/gm, '<ol><li>$1</li></ol>');
+    html = html.replace(/<\/ol>\s*<ol>/g, ''); // Merge consecutive ol blocks
+
+    // Bold
+    html = html.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
+
+    // Italic
+    html = html.replace(/\*([^\*]+)\*/g, '<em>$1</em>');
+    html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+    // Paragraphs & Line breaks:
+    const lines = html.split(/\n/);
+    let output = [];
+    let inParagraph = false;
+
+    for (let line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+            if (inParagraph) {
+                output.push('</p>');
+                inParagraph = false;
+            }
+            continue;
+        }
+
+        // If block level tag, close paragraph
+        if (/^<(h\d|pre|blockquote|ul|ol|li)/i.test(trimmed)) {
+            if (inParagraph) {
+                output.push('</p>');
+                inParagraph = false;
+            }
+            output.push(line);
+        } else {
+            if (!inParagraph) {
+                output.push('<p>');
+                inParagraph = true;
+            } else {
+                output.push('<br>');
+            }
+            output.push(line);
+        }
+    }
+    if (inParagraph) {
+        output.push('</p>');
+    }
+
+    return output.join('\n')
+        .replace(/<p>\s*<\/p>/g, '')
+        .replace(/\n\s*\n/g, '\n');
+}
+
+// ===================================================================
 // Initialization
 // ===================================================================
 switchView('data');
+
