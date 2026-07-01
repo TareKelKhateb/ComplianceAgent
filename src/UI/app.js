@@ -457,6 +457,23 @@ function renderApprovals(chunks) {
             </div>
             <div class="approval-card-body">
                 ${diffHtml}
+                
+                <!-- Policy Impact Analysis Section -->
+                <div class="policy-analysis-section" id="analysis-section-${chunk.id}">
+                    <div class="analysis-section-header">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                        <span>Policy Impact Analysis</span>
+                    </div>
+                    <div class="analysis-section-content" id="analysis-content-${chunk.id}" dir="auto">
+                        <div class="analysis-loading">
+                            <div class="loading-spinner-small"></div>
+                            <span>Analyzing policy impact...</span>
+                        </div>
+                    </div>
+                    <div class="analysis-sources" id="analysis-sources-${chunk.id}" style="display: none;"></div>
+                </div>
             </div>
             <div class="approval-card-actions">
                 <button type="button" class="btn btn-primary btn-approve" data-id="${chunk.id}">
@@ -477,8 +494,135 @@ function renderApprovals(chunks) {
         });
 
         approvalsList.appendChild(card);
+        
+        // Trigger policy impact analysis from chatbot
+        loadPolicyAnalysis(chunk);
     });
 }
+
+async function loadPolicyAnalysis(chunk) {
+    const contentEl = $(`#analysis-content-${chunk.id}`);
+    const sourcesEl = $(`#analysis-sources-${chunk.id}`);
+    if (!contentEl) return;
+
+    try {
+        const prompt = `You are an elite Regulatory Compliance & Policy Mapping Assistant.
+Please analyze how the following regulation change affects our internal company policies and guidelines.
+We need to map this law segment to our internal policy guidelines to identify any necessary adjustments or compliance gaps.
+
+CRITICAL INSTRUCTION: You MUST write the entire analysis, headings, comparisons, and explanation in Arabic (اللغة العربية). Do NOT write any part of the answer in English. Ensure that technical, financial, and compliance terminology matches professional Arabic standards.
+
+Here are the details of the regulation change:
+- Regulation Document Title: ${chunk.title || 'Untitled Document'}
+- Change Type: ${chunk.change_type === 'modified' ? 'Modification of an existing segment' : 'Addition of a new segment'}
+- Segment Index: ${chunk.chunk_index}
+- Page Number: ${chunk.page_number || 'N/A'}
+- Regulation Version: ${chunk.version}
+- Document ID: ${chunk.doc_id}
+
+Proposed Segment Content (Current Proposed Version):
+"""
+${chunk.content}
+"""
+${chunk.change_type === 'modified' ? `
+Previous Segment Content (Old Version):
+"""
+${chunk.old_content}
+"""` : ''}
+
+Please perform the following tasks in Arabic:
+1. Search our internal company policies for similar or related rules.
+2. Compare the proposed regulation change with our internal policies.
+3. Explicitly identify any gaps, conflicts, or required adjustments in our internal policies to remain compliant with this new regulation.
+4. Formulate the response as a clear, structured compliance mapping report (including tables if necessary).`;
+
+        const response = await fetch(`${API_BASE}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                question: prompt,
+                thread_id: 'approval_' + chunk.id + '_' + Date.now() // Unique thread per evaluation
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.detail || `HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        // Render answer markdown
+        contentEl.innerHTML = renderMarkdown(data.answer);
+        
+        // Render matching source documents evaluated inside a collapsible dropdown
+        if (data.sources_used && data.sources_used.length > 0) {
+            let sourcesHtml = `
+                <div class="chat-sources" style="margin-top: 12px;">
+                    <button class="chat-sources-toggle" onclick="toggleSources(this)">
+                        <span>📎 ${data.sources_used.length} Matching Policies Evaluated</span>
+                        <span class="toggle-arrow">▼</span>
+                    </button>
+                    <div class="chat-sources-list" style="margin-top: 10px;">
+            `;
+            
+            data.sources_used.forEach((src, idx) => {
+                const uniqueId = `analysis-src-${chunk.id}-${idx}`;
+                const truncatedContent = src.content.length > 180 
+                    ? escapeHTML(src.content.substring(0, 180)) + '...'
+                    : escapeHTML(src.content);
+                const hasMore = src.content.length > 180;
+
+                sourcesHtml += `
+                    <div class="analysis-source-item" onclick="toggleSourceExpand(this)">
+                        <div class="analysis-source-header">
+                            <span class="analysis-source-title">📄 Policy ID: ${escapeHTML(src.source_id)}</span>
+                        </div>
+                        <div class="source-chip-content truncated" id="${uniqueId}">
+                            ${truncatedContent}
+                            ${hasMore ? `<span class="source-chip-expand">Show more</span>` : ''}
+                        </div>
+                        <div class="source-chip-full-content" style="display:none;">${escapeHTML(src.content)}</div>
+                    </div>
+                `;
+            });
+            
+            sourcesHtml += `
+                    </div>
+                </div>
+            `;
+            sourcesEl.innerHTML = sourcesHtml;
+            sourcesEl.style.display = 'block';
+        } else {
+            sourcesEl.style.display = 'none';
+        }
+
+    } catch (err) {
+        contentEl.innerHTML = `
+            <div class="analysis-error">
+                <span>⚠️ Failed to load analysis: ${escapeHTML(err.message)}</span>
+                <button type="button" class="btn btn-secondary btn-retry" style="padding: 4px 10px; font-size: 0.75rem; width: auto;" onclick="retryPolicyAnalysis(${JSON.stringify(chunk).replace(/"/g, '&quot;')})">Retry</button>
+            </div>
+        `;
+    }
+}
+
+window.retryPolicyAnalysis = function(chunk) {
+    const contentEl = $(`#analysis-content-${chunk.id}`);
+    const sourcesEl = $(`#analysis-sources-${chunk.id}`);
+    if (contentEl) {
+        contentEl.innerHTML = `
+            <div class="analysis-loading">
+                <div class="loading-spinner-small"></div>
+                <span>Analyzing policy impact...</span>
+            </div>
+        `;
+    }
+    if (sourcesEl) {
+        sourcesEl.style.display = 'none';
+    }
+    loadPolicyAnalysis(chunk);
+};
 
 async function submitApproval(chunkId, cardElement) {
     try {
@@ -776,6 +920,33 @@ function renderMarkdown(md) {
     // Escape HTML first
     let html = escapeHTML(md);
 
+    // LaTeX styled colored text (e.g. \color{red}{\text{...}})
+    html = html.replace(/\$\\color\{([a-zA-Z]+)\}\{\\text\{([^\}]+)\}\}\$/g, (match, color, text) => {
+        const mappedColor = color === 'red' ? 'var(--error)' : (color === 'green' ? 'var(--success)' : color);
+        return `<span style="color: ${mappedColor}; font-weight: 600;">${text}</span>`;
+    });
+
+    // Parse Markdown tables before separating paragraphs
+    const tableRegex = /^(?:\|[^\n]+\|\r?\n){2,}(?:\|[^\n]+\|(?:\r?\n|$))*/gm;
+    html = html.replace(tableRegex, (tableBlock) => {
+        const rows = tableBlock.trim().split(/\r?\n/);
+        if (rows.length < 2) return tableBlock;
+        
+        let tableHtml = '<div style="overflow-x:auto; margin: 12px 0;"><table class="chat-markdown-table"><thead>';
+        // Process header row
+        const headerCols = rows[0].split('|').map(c => c.trim()).filter((c, i, arr) => i > 0 && i < arr.length - 1);
+        tableHtml += '<tr>' + headerCols.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+        
+        // Process data rows (skip rows[1] which is the separator)
+        for (let i = 2; i < rows.length; i++) {
+            const cols = rows[i].split('|').map(c => c.trim()).filter((c, i, arr) => i > 0 && i < arr.length - 1);
+            if (cols.length === 0) continue;
+            tableHtml += '<tr>' + cols.map(c => `<td>${c}</td>`).join('') + '</tr>';
+        }
+        tableHtml += '</tbody></table></div>';
+        return tableHtml;
+    });
+
     // Code blocks
     html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
     html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
@@ -821,8 +992,8 @@ function renderMarkdown(md) {
             continue;
         }
 
-        // If block level tag, close paragraph
-        if (/^<(h\d|pre|blockquote|ul|ol|li)/i.test(trimmed)) {
+        // If block-level tag, close paragraph
+        if (/^<(h\d|pre|blockquote|ul|ol|li|table|thead|tbody|tr|th|td|div)/i.test(trimmed)) {
             if (inParagraph) {
                 output.push('</p>');
                 inParagraph = false;
